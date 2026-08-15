@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+db.sqlite3
+.env
+
+node_modules/
+dist/
+
+.DS_Store
+
+# Scratch space for real bank export samples during debugging - never commit
+# real financial data.
+temp/

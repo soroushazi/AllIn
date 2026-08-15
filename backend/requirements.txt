@@ -1,0 +1,10 @@
+Django==6.1
+djangorestframework==3.18.0
+django-cors-headers==4.9.0
+psycopg[binary]==3.3.4
+pandas==2.3.3
+openpyxl==3.1.5
+xlrd==2.0.2
+lxml==5.3.0
+html5lib==1.1
+beautifulsoup4==4.12.3
