@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
-import { useCards, useCategories } from '../hooks'
+import { useCards, useCategories, useLocations, useTags, useUsers } from '../hooks'
+import AddTransactionForm from '../AddTransactionForm'
 
 const EMPTY_MAPPING = {
   date_column: '',
@@ -14,16 +15,15 @@ const EMPTY_MAPPING = {
   flip_sign: false,
 }
 
-const OWNERS = ['soroush', 'shiva']
-
 function todayISO() {
   return new Date().toISOString().slice(0, 10)
 }
 
 function LogIncome() {
+  const [users] = useUsers()
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
-  const [form, setForm] = useState({ owner: OWNERS[0], date: todayISO(), amount: '', source: 'Paycheck' })
+  const [form, setForm] = useState({ owner: '', date: todayISO(), amount: '', source: 'Paycheck' })
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
 
@@ -34,6 +34,10 @@ function LogIncome() {
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false))
   }, [])
+
+  useEffect(() => {
+    if (users.length > 0 && !form.owner) setForm((f) => ({ ...f, owner: users[0].username }))
+  }, [users, form.owner])
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -67,9 +71,9 @@ function LogIncome() {
       <form className="card stack" onSubmit={handleSubmit}>
         <div className="filter-row">
           <select value={form.owner} onChange={(e) => setForm({ ...form, owner: e.target.value })}>
-            {OWNERS.map((o) => (
-              <option key={o} value={o}>
-                {o[0].toUpperCase() + o.slice(1)}
+            {users.map((u) => (
+              <option key={u.id} value={u.username}>
+                {u.username[0].toUpperCase() + u.username.slice(1)}
               </option>
             ))}
           </select>
@@ -128,6 +132,79 @@ function LogIncome() {
           </li>
         ))}
       </ul>
+    </div>
+  )
+}
+
+function AddTransaction() {
+  const [cards] = useCards()
+  const [categories] = useCategories()
+  const [tags, setTags] = useTags()
+  const [locations, setLocations] = useLocations()
+  const [addedThisSession, setAddedThisSession] = useState([])
+
+  const tagSuggestions = tags.map((t) => t.name)
+  const categoryById = Object.fromEntries(categories.map((c) => [c.id, c]))
+
+  function handleAdded(created) {
+    setAddedThisSession((prev) => [created, ...prev])
+    api.tags.list().then(setTags).catch(() => {})
+    api.locations.list().then(setLocations).catch(() => {})
+  }
+
+  async function handleDelete(id) {
+    const previous = addedThisSession
+    setAddedThisSession((prev) => prev.filter((t) => t.id !== id))
+    try {
+      await api.transactions.remove(id)
+    } catch {
+      setAddedThisSession(previous)
+    }
+  }
+
+  return (
+    <div className="stack">
+      <AddTransactionForm
+        cards={cards}
+        categories={categories}
+        locationSuggestions={locations}
+        tagSuggestions={tagSuggestions}
+        onAdded={handleAdded}
+      />
+
+      {addedThisSession.length > 0 && (
+        <div className="stack">
+          <p className="muted small">Added this session</p>
+          <ul className="transaction-list">
+            {addedThisSession.map((t) => {
+              const category = categoryById[t.category]
+              return (
+                <li key={t.id} className="transaction-row">
+                  <div className="transaction-main">
+                    <span
+                      className="category-dot"
+                      style={{ background: category ? category.color : 'var(--surface-3)' }}
+                    />
+                    <div className="transaction-desc">{t.description}</div>
+                    <div className={`amount ${Number(t.amount) < 0 ? 'positive' : ''}`}>
+                      {Number(t.amount) < 0 ? '+' : ''}
+                      {Math.abs(Number(t.amount)).toFixed(2)}
+                    </div>
+                  </div>
+                  <div className="transaction-sub muted small">
+                    {t.date} · {category ? category.name : 'Uncategorized'}
+                  </div>
+                  <div className="transaction-actions">
+                    <button className="link-button danger" onClick={() => handleDelete(t.id)}>
+                      Delete
+                    </button>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }
@@ -690,12 +767,17 @@ export default function Import() {
         <button className={mode === 'statement' ? 'active' : ''} onClick={() => setMode('statement')}>
           Import statement
         </button>
+        <button className={mode === 'transaction' ? 'active' : ''} onClick={() => setMode('transaction')}>
+          Add transaction
+        </button>
         <button className={mode === 'income' ? 'active' : ''} onClick={() => setMode('income')}>
           Log income
         </button>
       </div>
 
-      {mode === 'statement' ? <ImportStatement /> : <LogIncome />}
+      {mode === 'statement' && <ImportStatement />}
+      {mode === 'income' && <LogIncome />}
+      {mode === 'transaction' && <AddTransaction />}
     </div>
   )
 }

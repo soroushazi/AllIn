@@ -49,7 +49,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
   color: inherit;
 }
@@ -252,13 +253,19 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   background: var(--surface-1);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 12px;
   color: var(--text-primary);
   font-size: 0.9375rem;
+}
+
+textarea {
+  resize: vertical;
+  font-family: inherit;
 }
 
 .checkbox-row {
@@ -406,9 +413,6 @@ button.primary:disabled {
 .transaction-desc {
   flex: 1;
   min-width: 0;
-}
-
-.transaction-desc > div:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -417,27 +421,112 @@ button.primary:disabled {
 .amount {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+  flex-shrink: 0;
 }
 
 .amount.positive {
   color: var(--accent);
 }
 
+.transaction-sub {
+  margin-top: 4px;
+}
+
+.transaction-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.tag-pill {
+  background: var(--surface-3);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+}
+
 .transaction-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  justify-content: flex-end;
+  gap: 16px;
   margin-top: 10px;
 }
 
-.transaction-actions select {
-  flex: 1;
-  min-width: 0;
+.tag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
 }
 
-.transaction-actions button {
-  flex-shrink: 0;
+.tag-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--surface-3);
+  color: var(--text-primary);
+  border-radius: 999px;
+  padding: 4px 6px 4px 10px;
+  font-size: 0.8125rem;
+}
+
+.tag-chip button {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  color: var(--text-secondary);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tag-editor input {
+  flex: 1;
+  min-width: 140px;
+}
+
+.location-combobox input {
+  width: 100%;
+}
+
+.combobox-menu {
+  /* In normal flow (not position:absolute) rather than floating over
+     following fields - this dropdown lives inside .dialog-card, which
+     scrolls its own overflow, and an absolutely-positioned menu was
+     getting silently clipped at the card's scroll boundary. */
+  width: 100%;
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 4px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.combobox-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 0.875rem;
+}
+
+.combobox-menu button:hover {
+  background: var(--surface-3);
 }
 
 /* --- Budgets --- */
@@ -555,6 +644,8 @@ button.primary:disabled {
 .dialog-card {
   width: 100%;
   max-width: 360px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
   animation: dialog-card-in 0.15s ease-out;
 }

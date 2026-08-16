@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import { useUsers } from '../hooks'
 
 export default function Budgets() {
+  const [users] = useUsers()
   const [period, setPeriod] = useState('weekly')
   const [owner, setOwner] = useState('')
   const [data, setData] = useState(null)
@@ -30,8 +32,11 @@ export default function Budgets() {
 
         <select value={owner} onChange={(e) => setOwner(e.target.value)}>
           <option value="">Combined</option>
-          <option value="soroush">Soroush</option>
-          <option value="shiva">Shiva</option>
+          {users.map((u) => (
+            <option key={u.id} value={u.username}>
+              {u.username[0].toUpperCase() + u.username.slice(1)}
+            </option>
+          ))}
         </select>
       </div>
 

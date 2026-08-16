@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { api } from '../api'
+import { useUsers } from '../hooks'
 
-const OWNERS = ['soroush', 'shiva']
-const OWNER_COLORS = { soroush: '#2a78d6', shiva: '#eb6834' }
+// Fixed by position (lower id first), not by username, so colors don't
+// shift around if someone renames their login username.
+const SLOT_COLORS = ['#2a78d6', '#eb6834']
 const MILESTONES = [1000, 10000, 50000, 100000, 200000]
 const CATEGORY_LABELS = {
   savings: 'Savings',
@@ -46,6 +48,7 @@ function Segment({ title, total, maxTotal, color, accounts }) {
 }
 
 export default function FinancialFreedom() {
+  const [users] = useUsers()
   const [summary, setSummary] = useState(null)
   const [accounts, setAccounts] = useState([])
   const [loading, setLoading] = useState(true)
@@ -101,10 +104,10 @@ export default function FinancialFreedom() {
           {Object.keys(byOwner).length > 0 && (
             <div className="card">
               <div className="person-stats">
-                {OWNERS.map((o) => (
-                  <div key={o}>
-                    <span className="legend-dot" style={{ background: OWNER_COLORS[o] }} />
-                    {o[0].toUpperCase() + o.slice(1)}: <strong>{fmt(byOwner[o] ?? 0)}</strong>
+                {users.map((u, i) => (
+                  <div key={u.id}>
+                    <span className="legend-dot" style={{ background: SLOT_COLORS[i] }} />
+                    {u.username[0].toUpperCase() + u.username.slice(1)}: <strong>{fmt(byOwner[u.username] ?? 0)}</strong>
                   </div>
                 ))}
               </div>

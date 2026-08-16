@@ -1,10 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../api'
-import { useCards } from '../hooks'
+import { useCards, useUsers } from '../hooks'
 import ConfirmDialog from '../ConfirmDialog'
 
-const OWNERS = ['soroush', 'shiva']
-const EMPTY_FORM = { owner: OWNERS[0], name: '', type: 'debit', header_row: '1' }
+const EMPTY_FORM = { owner: '', name: '', type: 'debit', header_row: '1' }
 
 function baseDraft(card) {
   return { owner: card.owner, name: card.name, type: card.type, header_row: String(card.header_row ?? 1) }
@@ -12,12 +11,17 @@ function baseDraft(card) {
 
 export default function Cards() {
   const [cards, setCards] = useCards()
+  const [users] = useUsers()
   const [newForm, setNewForm] = useState(EMPTY_FORM)
   const [drafts, setDrafts] = useState({})
   const [error, setError] = useState(null)
   const [creating, setCreating] = useState(false)
   const [savingId, setSavingId] = useState(null)
   const [pendingDelete, setPendingDelete] = useState(null)
+
+  useEffect(() => {
+    if (users.length > 0 && !newForm.owner) setNewForm((f) => ({ ...f, owner: users[0].username }))
+  }, [users, newForm.owner])
 
   function updateDraft(card, patch) {
     setDrafts((d) => ({ ...d, [card.id]: { ...(d[card.id] ?? baseDraft(card)), ...patch } }))
@@ -31,7 +35,7 @@ export default function Cards() {
     try {
       const created = await api.cards.create({ ...newForm, name: newForm.name.trim() })
       setCards((cs) => [...cs, created])
-      setNewForm(EMPTY_FORM)
+      setNewForm({ ...EMPTY_FORM, owner: users[0]?.username || '' })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -79,9 +83,9 @@ export default function Cards() {
         <h3>New card</h3>
         <div className="filter-row">
           <select value={newForm.owner} onChange={(e) => setNewForm({ ...newForm, owner: e.target.value })}>
-            {OWNERS.map((o) => (
-              <option key={o} value={o}>
-                {o[0].toUpperCase() + o.slice(1)}
+            {users.map((u) => (
+              <option key={u.id} value={u.username}>
+                {u.username[0].toUpperCase() + u.username.slice(1)}
               </option>
             ))}
           </select>
@@ -128,9 +132,9 @@ export default function Cards() {
             <li key={card.id} className="category-row card stack">
               <div className="filter-row">
                 <select value={draft.owner} onChange={(e) => updateDraft(card, { owner: e.target.value })}>
-                  {OWNERS.map((o) => (
-                    <option key={o} value={o}>
-                      {o[0].toUpperCase() + o.slice(1)}
+                  {users.map((u) => (
+                    <option key={u.id} value={u.username}>
+                      {u.username[0].toUpperCase() + u.username.slice(1)}
                     </option>
                   ))}
                 </select>

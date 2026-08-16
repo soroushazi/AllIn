@@ -66,6 +66,17 @@ export const api = {
   login: (username, password) => request('/api/auth/login/', { method: 'POST', body: { username, password } }),
   logout: () => request('/api/auth/logout/', { method: 'POST' }),
   me: () => request('/api/auth/me/'),
+  changePassword: (currentPassword, newPassword) =>
+    request('/api/auth/change-password/', {
+      method: 'POST',
+      body: { current_password: currentPassword, new_password: newPassword },
+    }),
+  changeUsername: (newUsername) =>
+    request('/api/auth/change-username/', { method: 'POST', body: { new_username: newUsername } }),
+
+  users: {
+    list: () => request('/api/auth/users/'),
+  },
 
   categories: {
     list: () => request('/api/categories/'),
@@ -83,9 +94,19 @@ export const api = {
 
   transactions: {
     list: (params) => request(`/api/transactions/${buildQuery(params)}`),
+    create: (data) => request('/api/transactions/', { method: 'POST', body: data }),
+    update: (id, data) => request(`/api/transactions/${id}/`, { method: 'PATCH', body: data }),
     remove: (id) => request(`/api/transactions/${id}/`, { method: 'DELETE' }),
     recategorize: (id, category) =>
       request(`/api/transactions/${id}/recategorize/`, { method: 'PATCH', body: { category } }),
+  },
+
+  tags: {
+    list: () => request('/api/tags/'),
+  },
+
+  locations: {
+    list: () => request('/api/locations/'),
   },
 
   budgets: {

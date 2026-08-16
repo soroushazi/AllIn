@@ -8,6 +8,7 @@ from .models import (
     MerchantRule,
     NetWorthAccount,
     NetWorthEntry,
+    Tag,
     Transaction,
     YearlyExpense,
 )
@@ -26,10 +27,16 @@ class CardAdmin(admin.ModelAdmin):
 
 @admin.register(Transaction)
 class TransactionAdmin(admin.ModelAdmin):
-    list_display = ["date", "owner", "card", "description", "amount", "category", "source"]
+    list_display = ["date", "owner", "card", "description", "amount", "category", "location", "source"]
     list_filter = ["owner", "card", "category", "source"]
-    search_fields = ["description"]
+    search_fields = ["description", "location", "notes"]
     date_hierarchy = "date"
+
+
+@admin.register(Tag)
+class TagAdmin(admin.ModelAdmin):
+    list_display = ["name"]
+    search_fields = ["name"]
 
 
 @admin.register(ColumnMapping)

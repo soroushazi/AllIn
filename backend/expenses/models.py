@@ -41,10 +41,25 @@ class Card(models.Model):
         return f"{self.owner} - {self.name}"
 
 
+class Tag(models.Model):
+    """A free-form label a user attaches to transactions, e.g. a trip name,
+    so spending under that label can be found again later. Shared across
+    both users, same as Category/MerchantRule - not owner-scoped."""
+
+    name = models.CharField(max_length=50, unique=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
 class Transaction(models.Model):
     class Source(models.TextChoices):
         IMPORT = "import", "Import"
         VOICE = "voice", "Voice"
+        MANUAL = "manual", "Manual"
 
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="transactions")
     card = models.ForeignKey(Card, on_delete=models.CASCADE, related_name="transactions")
@@ -54,6 +69,12 @@ class Transaction(models.Model):
     category = models.ForeignKey(
         Category, on_delete=models.SET_NULL, null=True, blank=True, related_name="transactions"
     )
+    # User-added context beyond the category - never touched by import/voice,
+    # purely manual, filled in whenever the user wants more detail than a
+    # category alone carries.
+    notes = models.TextField(blank=True, default="")
+    location = models.CharField(max_length=200, blank=True, default="", help_text="e.g. Walmart, Trader Joe's")
+    tags = models.ManyToManyField(Tag, blank=True, related_name="transactions")
     source = models.CharField(max_length=10, choices=Source.choices, default=Source.IMPORT)
     dedupe_key = models.CharField(max_length=64, unique=True, editable=False)
 

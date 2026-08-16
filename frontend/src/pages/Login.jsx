@@ -1,14 +1,18 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../AuthContext'
-
-const USERS = ['soroush', 'shiva']
+import { useUsers } from '../hooks'
 
 export default function Login() {
   const { login } = useAuth()
-  const [username, setUsername] = useState(USERS[0])
+  const [users] = useUsers()
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (users.length > 0 && !username) setUsername(users[0].username)
+  }, [users, username])
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -30,14 +34,14 @@ export default function Login() {
         <p className="muted">Household expenses</p>
 
         <div className="user-toggle">
-          {USERS.map((u) => (
+          {users.map((u) => (
             <button
-              key={u}
+              key={u.id}
               type="button"
-              className={u === username ? 'active' : ''}
-              onClick={() => setUsername(u)}
+              className={u.username === username ? 'active' : ''}
+              onClick={() => setUsername(u.username)}
             >
-              {u[0].toUpperCase() + u.slice(1)}
+              {u.username[0].toUpperCase() + u.username.slice(1)}
             </button>
           ))}
         </div>

@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.db.models.functions import Abs
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -10,13 +10,25 @@ from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Card, Category, Income, MerchantRule, NetWorthAccount, NetWorthEntry, Transaction, YearlyExpense
+from .models import (
+    Card,
+    Category,
+    Income,
+    MerchantRule,
+    NetWorthAccount,
+    NetWorthEntry,
+    Tag,
+    Transaction,
+    YearlyExpense,
+)
 from .serializers import (
     CardSerializer,
     CategorySerializer,
     IncomeSerializer,
     NetWorthAccountSerializer,
     NetWorthEntrySerializer,
+    TagSerializer,
+    TransactionCreateSerializer,
     TransactionSerializer,
     YearlyExpenseSerializer,
 )
@@ -42,6 +54,31 @@ class CategoryViewSet(viewsets.ModelViewSet):
 class CardViewSet(viewsets.ModelViewSet):
     queryset = Card.objects.select_related("owner").all()
     serializer_class = CardSerializer
+
+
+class TagViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    # Tags are created implicitly whenever a transaction is tagged (see
+    # TransactionSerializer.update) - this just lists them, for the
+    # Transactions screen's filter dropdown and tag-input autocomplete.
+    queryset = Tag.objects.all()
+    serializer_class = TagSerializer
+
+
+class LocationsView(APIView):
+    """Distinct, non-empty transaction locations - powers the Where field's
+    search/autocomplete on the Import and Transactions screens. Unlike Tag,
+    there's no separate Location model - location is a plain CharField on
+    Transaction - so this just reads distinct values directly rather than
+    joining a lookup table."""
+
+    def get(self, request):
+        locations = (
+            Transaction.objects.exclude(location="")
+            .order_by("location")
+            .values_list("location", flat=True)
+            .distinct()
+        )
+        return Response(list(locations))
 
 
 class IncomeViewSet(viewsets.ModelViewSet):
@@ -198,14 +235,56 @@ class FreedomSummaryView(APIView):
 
 
 class TransactionViewSet(
-    mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.DestroyModelMixin, viewsets.GenericViewSet
+    mixins.ListModelMixin,
+    mixins.CreateModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    mixins.DestroyModelMixin,
+    viewsets.GenericViewSet,
 ):
-    # Transactions are created by the import pipeline / voice capture, not this API.
-    # Category changes go through recategorize() so the merchant-rule table stays in sync.
+    # Bulk transactions are created by the import pipeline, not this API -
+    # create() here is only for a single manually-typed transaction (Import
+    # screen's "Add transaction" tab / Transactions screen's add form).
+    # Category changes on an *existing* row go through recategorize() so the
+    # merchant-rule table stays in sync; generic PATCH here is for the
+    # manual, never-imported fields (notes/location/tags).
     serializer_class = TransactionSerializer
 
+    def get_serializer_class(self):
+        if self.action == "create":
+            return TransactionCreateSerializer
+        return TransactionSerializer
+
+    def create(self, request, *args, **kwargs):
+        # Manual/voice entries aren't a bank export re-upload, so there's no
+        # exact description string to dedupe against like import has - a
+        # hand-typed "Walmart" won't match an already-imported "WALMART
+        # SUPERCENTER" even though it's probably the same purchase. Instead
+        # of silently skipping (import's behavior) or silently allowing a
+        # likely double-entry, warn once: same card + date + amount, any
+        # description, and let the user decide. Sending confirm_duplicate
+        # skips this check and creates it anyway (e.g. two genuinely
+        # separate $5 coffees on the same card and day).
+        confirm_duplicate = str(request.data.get("confirm_duplicate", "")).lower() in ("true", "1")
+        if not confirm_duplicate:
+            card_id = request.data.get("card")
+            date = request.data.get("date")
+            amount = request.data.get("amount")
+            if card_id and date and amount not in (None, ""):
+                similar = Transaction.objects.filter(card_id=card_id, date=date, amount=amount).select_related(
+                    "category"
+                )
+                if similar.exists():
+                    return Response(
+                        {
+                            "possible_duplicate": True,
+                            "similar_transactions": TransactionSerializer(similar, many=True).data,
+                        }
+                    )
+        return super().create(request, *args, **kwargs)
+
     def get_queryset(self):
-        qs = Transaction.objects.select_related("owner", "card", "category")
+        qs = Transaction.objects.select_related("owner", "card", "category").prefetch_related("tags")
         params = self.request.query_params
 
         owner = params.get("owner")
@@ -247,7 +326,13 @@ class TransactionViewSet(
 
         search = params.get("search")
         if search:
-            qs = qs.filter(description__icontains=search)
+            qs = qs.filter(
+                Q(description__icontains=search) | Q(location__icontains=search) | Q(notes__icontains=search)
+            )
+
+        tag = params.get("tag")
+        if tag:
+            qs = qs.filter(tags__id=tag)
 
         # "Cash in" / "Cash out" - same sign convention as the amount_min/max
         # fix above: stored amount > 0 is real spending (cash out), < 0 is

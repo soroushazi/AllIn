@@ -69,20 +69,36 @@ Why these choices, so they don't get re-litigated:
   Discover is 13)
 - **Transaction** — owner, card (FK), date, description, amount, category (FK,
   nullable = uncategorized - but import only leaves it null when there's truly
-  no signal; see below), source ("import" or "voice"), dedupe_key. Import
-  resolves `category` as: an existing MerchantRule match first, else - if the
-  card's mapping has a category_column - the export's own category label as a
-  suggestion. New (non-duplicate) rows are never written straight to the
-  ledger with that suggestion, though: they're held as an in-memory,
-  unpersisted preview (`pending_transactions`) for the user to review/edit
-  (description and category, per-row) and explicitly approve via
-  `POST /api/import/confirm/` before anything is created - see the
-  2026-08-16 "Import: review-before-commit" status note below. Only at that
-  approval step does an accepted bank label actually get-or-created as a real
-  Category (case-insensitive exact match). Manually recategorizing a
-  transaction later (Transactions screen) both fixes it and teaches a
-  MerchantRule, so future imports of the same merchant pre-fill the real
-  category during review and skip needing a bank-label suggestion entirely.
+  no signal; see below), notes (free-text detail beyond the category, e.g.
+  who/where/why), location (free-text, e.g. "Walmart" vs "Trader Joe's" -
+  separate from category so spend-by-merchant is answerable), tags (M2M to
+  Tag), source ("import", "voice", or "manual" - see below), dedupe_key.
+  notes/location/tags are purely manual, never touched by import/voice, and
+  are edited via an explicit Edit dialog (Transactions screen) rather than
+  on-the-fly, to avoid accidental edits. Import resolves `category` as: an
+  existing MerchantRule match first, else - if the card's mapping has a
+  category_column - the export's own category label as a suggestion. New
+  (non-duplicate) rows are never written straight to the ledger with that
+  suggestion, though: they're held as an in-memory, unpersisted preview
+  (`pending_transactions`) for the user to review/edit (description and
+  category, per-row) and explicitly approve via `POST /api/import/confirm/`
+  before anything is created - see the 2026-08-16 "Import: review-before-commit"
+  status note below. Only at that approval step does an accepted bank label
+  actually get-or-created as a real Category (case-insensitive exact match).
+  Manually recategorizing a transaction later (Transactions screen) both
+  fixes it and teaches a MerchantRule, so future imports of the same
+  merchant pre-fill the real category during review and skip needing a
+  bank-label suggestion entirely. A single transaction can also be added by
+  hand (`source="manual"` - Import screen's "Add transaction" tab, or the
+  same form as a pop-up on the Transactions screen) - see the 2026-08-17
+  "Manual add + duplicate finder" status note for how this differs from a
+  bulk import (no exact description to dedupe against, so it warns on a
+  same-card/date/amount match instead of silently skipping or allowing).
+- **Tag** — name (unique, case-insensitive). Free-form labels a user attaches
+  to transactions (e.g. a trip name) so spending under that label can be
+  found again later - shared across both users, created implicitly the
+  first time a tag name is used (`GET /api/tags/` just lists existing ones
+  for autocomplete/filtering).
 - **ColumnMapping** — per (owner, card): which spreadsheet columns map to date/
   description/amount, debit/credit split, or the export's own category column
   (optional), plus a sign-flip flag. Learned once per card (via the Import
@@ -131,7 +147,10 @@ Why these choices, so they don't get re-litigated:
    ledger. Never silently auto-commit parsed data or bank-supplied categories.
 2. **Dedup on import.** Re-uploading a file with overlapping dates must not create
    duplicate transactions. Use a dedupe key of (owner, card, date, description,
-   amount).
+   amount). For a manually-typed or voice-parsed entry there's no exact bank
+   description to key off of, so instead of silently skipping (import's
+   behavior) or silently allowing a likely double-entry, warn once on a
+   same-card/date/amount match and let the user confirm "add anyway."
 3. **Learn from corrections.** Every manual category correction should update the
    merchant-rule table so the same merchant auto-categorizes next time, for both
    users.
@@ -1431,6 +1450,96 @@ account: login still succeeds end-to-end, and both spots now render the
 capitalized form ("Verifytemp"). Real accounts confirmed unaffected
 (`soroush`, `shiva` still the only two users, unchanged). `npm run
 build`/`npm run lint` clean.
+
+#### Transaction detail fields, manual add + duplicate finder, account settings — 2026-08-16, later the same day
+
+A run of smaller features, each verified end-to-end with throwaway
+accounts/data via headless Playwright + curl before/after real-data counts,
+in this order:
+
+- **Notes/location/tags on transactions** (see Data model above for the
+  `Transaction`/`Tag` fields) - editable per-transaction on the
+  Transactions screen. First built as inline auto-save-on-blur fields, then
+  **replaced with an explicit Edit dialog** (category/notes/location/tags,
+  with Cancel/Save) per user feedback - on-the-fly edits felt risky to mess
+  up. Where/Tags are a small search-as-you-type combobox (shared
+  `Combobox.jsx`: type to filter existing values, click to select, type a
+  new value and hit Enter to create it) rather than a native `<datalist>`,
+  which didn't give a real "pick from filtered matches" experience. One
+  real bug caught during verification: the combobox dropdown was
+  `position: absolute` and got silently clipped by the Edit dialog's own
+  `overflow-y: auto` - fixed by rendering it in normal document flow
+  instead of floating. Transaction cards were also reflowed per user
+  spec: description+amount on top, date/category below, uploader/card
+  below that, tags as pill labels at the very top.
+- **Manual "Add transaction"** - a single hand-typed transaction (not a
+  bulk import), `source="manual"`. Lives as a third toggle on the Import
+  screen (order: Import statement / Add transaction / Log income) and as a
+  "+ Add transaction" button on the Transactions screen that opens the
+  same form in a pop-up dialog (originally a collapsible `<details>`,
+  changed to a dialog per user feedback). Shared `AddTransactionForm.jsx`
+  used in both places. Includes the **duplicate finder** described in Key
+  principles above - `TransactionViewSet.create()` pre-checks for an
+  existing same-card/date/amount row and returns `possible_duplicate` +
+  the match instead of creating, so the frontend can show a "Possible
+  duplicate - add anyway?" confirm (`ConfirmDialog` gained a
+  `confirmVariant="primary"` option so this reads as a question, not a
+  delete warning) rather than either silently skipping (which would be
+  wrong here, since a hand-typed description can legitimately differ from
+  an already-imported one for the same purchase) or silently allowing a
+  likely double-entry. A byte-identical resubmit (same description too)
+  still hard-blocks even after confirming - that's a real double-submit,
+  not a judgment call.
+- **Password change** (`pages/Account.jsx`) - `POST
+  /api/auth/change-password/`, validated through Django's standard
+  password validators, `update_session_auth_hash` so the current session
+  survives its own password change instead of getting logged out mid-request.
+- **Username change** - the bigger of two options offered (vs. a cosmetic
+  display-name field) - actually renames the Django `username` used to log
+  in. This meant `username` could no longer be hardcoded as a literal
+  `'soroush'`/`'shiva'` string anywhere, which it was in ~8 frontend files
+  (Login's toggle, every owner filter dropdown, Overview's per-person
+  totals/colors, NetWorthAccounts' account-owner picker). All replaced with
+  a shared `useUsers()` hook backed by a new public `GET /api/auth/users/`
+  (ordered by id - needed pre-login by the Login screen, not sensitive,
+  just `{id, username}` for the two accounts). Overview/FinancialFreedom's
+  per-person colors are now assigned by *position* (lower user id = first
+  color) rather than by username, so a rename doesn't shuffle them.
+  **`YearlyExpense.scope`'s `"soroush"`/`"shiva"` values were deliberately
+  left as fixed internal keys, not tied to the live username** - mapped to
+  whichever user has the lower/higher id, so a rename can't orphan an
+  already-recorded yearly-expense number; only the displayed label next to
+  the toggle is dynamic. Verified with two throwaway accounts (real
+  soroush/shiva permanently occupy id-order slots 0/1, so a throwaway
+  rename couldn't exercise that specific slot-relabeling path directly -
+  confirmed instead that the real accounts' labels/values were completely
+  unaffected by the unrelated throwaway rename, and that the slot logic is
+  sound by construction since id never changes). **Caught and fixed a real
+  mistake mid-session**: a test-data seed script used
+  `update_or_create` on `YearlyExpense` for scopes `"soroush"`/`"shiva"`
+  without first checking whether real values already existed there -
+  overwrote them with test numbers. Caught via a pre-existing
+  `household=$40,000` row the script never touched and suspiciously
+  sequential ids on the two overwritten rows (strong evidence they were
+  freshly created, not real data) - reverted by deleting them back to the
+  "unset" state. **If a real per-person yearly-expense value was set
+  before this, it's gone and needs to be re-entered** - the household
+  value was never touched.
+
+`npm run build`/`npm run lint` and `python manage.py check` clean
+throughout. Real data (8 cards, 27 categories, 41 transactions, 6 income
+entries, `soroush`/`shiva` still the only two users) confirmed unaffected
+at every step.
+
+**Next up: voice-to-text capture, feeding into Ollama for structured
+extraction** (Phase 2 + 3 below) - the natural next addition now that manual
+single-transaction entry exists as a pattern to extend (voice will land as a
+third `source` alongside `import`/`manual`, going through the same
+draft-before-commit principle already established for bank-label
+categorization). Voice-to-text itself is self-hosted Whisper/
+`faster-whisper` (Phase 2); Ollama's job is turning that raw transcript
+into structured `{amount, merchant, category, owner}` (Phase 3) - see the
+Stack section above for why that split.
 
 ### Phase 2 — Voice capture
 - [ ] `MediaRecorder` audio capture in the PWA

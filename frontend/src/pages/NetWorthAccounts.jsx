@@ -1,10 +1,17 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { toISO } from '../dateFilters'
+import { useUsers } from '../hooks'
 import ConfirmDialog from '../ConfirmDialog'
 
-const OWNERS = ['soroush', 'shiva']
+// YearlyExpense's per-person scope keys are fixed internal identifiers
+// established when these two accounts were first created - not the live
+// username. Position 0 in useUsers() (lower id, i.e. whoever was created
+// first) is permanently the "soroush" slot, position 1 is "shiva" - so a
+// rename doesn't orphan an already-set yearly expense value. The scope
+// values sent to the API never change; only the displayed label does.
 const EXPENSE_SCOPES = ['household', 'soroush', 'shiva']
+const SCOPE_SLOT_INDEX = { soroush: 0, shiva: 1 }
 const CATEGORY_LABELS = {
   savings: 'Savings',
   investment: 'Investment',
@@ -24,7 +31,14 @@ function todayISO() {
   return toISO(new Date())
 }
 
+function scopeLabel(scope, users) {
+  if (scope === 'household') return 'Household'
+  const u = users[SCOPE_SLOT_INDEX[scope]]
+  return u ? u.username[0].toUpperCase() + u.username.slice(1) : scope[0].toUpperCase() + scope.slice(1)
+}
+
 export default function NetWorthAccounts() {
+  const [users] = useUsers()
   const [accounts, setAccounts] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -34,7 +48,7 @@ export default function NetWorthAccounts() {
   const [expenseInput, setExpenseInput] = useState('')
   const [savingExpense, setSavingExpense] = useState(false)
 
-  const [newAccount, setNewAccount] = useState({ owner: OWNERS[0], name: '', category: 'savings' })
+  const [newAccount, setNewAccount] = useState({ owner: '', name: '', category: 'savings' })
   const [creatingAccount, setCreatingAccount] = useState(false)
 
   const [balanceDrafts, setBalanceDrafts] = useState({})
@@ -61,6 +75,10 @@ export default function NetWorthAccounts() {
   useEffect(() => {
     setExpenseInput(expenses[expenseScope] ?? '')
   }, [expenses, expenseScope])
+
+  useEffect(() => {
+    if (users.length > 0 && !newAccount.owner) setNewAccount((a) => ({ ...a, owner: users[0].username }))
+  }, [users, newAccount.owner])
 
   function draftFor(accountId) {
     return balanceDrafts[accountId] ?? { amount: '', date: todayISO() }
@@ -92,7 +110,7 @@ export default function NetWorthAccounts() {
     try {
       const created = await api.networth.accounts.create({ ...newAccount, name: newAccount.name.trim() })
       setAccounts((a) => [...a, created])
-      setNewAccount({ owner: OWNERS[0], name: '', category: 'savings' })
+      setNewAccount({ owner: users[0]?.username || '', name: '', category: 'savings' })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -209,7 +227,7 @@ export default function NetWorthAccounts() {
                   className={scope === expenseScope ? 'active' : ''}
                   onClick={() => setExpenseScope(scope)}
                 >
-                  {scope[0].toUpperCase() + scope.slice(1)}
+                  {scopeLabel(scope, users)}
                 </button>
               ))}
             </div>
@@ -263,9 +281,9 @@ export default function NetWorthAccounts() {
             <form className="stack" onSubmit={handleCreateAccount} style={{ marginTop: 10 }}>
               <div className="filter-row">
                 <select value={newAccount.owner} onChange={(e) => setNewAccount({ ...newAccount, owner: e.target.value })}>
-                  {OWNERS.map((o) => (
-                    <option key={o} value={o}>
-                      {o[0].toUpperCase() + o.slice(1)}
+                  {users.map((u) => (
+                    <option key={u.id} value={u.username}>
+                      {u.username[0].toUpperCase() + u.username.slice(1)}
                     </option>
                   ))}
                 </select>

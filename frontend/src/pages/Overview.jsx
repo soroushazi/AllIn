@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, AreaChart, Area } from 'recharts'
 import { api } from '../api'
-import { useCategories } from '../hooks'
+import { useCategories, useUsers } from '../hooks'
 import DateFilter from '../DateFilter'
 import { getDateRange, toISO } from '../dateFilters'
 
@@ -15,11 +15,14 @@ function enumerateDates(start, end) {
   return dates
 }
 
-const OWNER_COLORS = { soroush: '#2a78d6', shiva: '#eb6834' }
+// Fixed by position (lower id first), not by username, so colors don't
+// shift around if someone renames their login username.
+const SLOT_COLORS = ['#2a78d6', '#eb6834']
 const UNCATEGORIZED_COLOR = '#8a8a86'
 
 export default function Overview() {
   const [categories] = useCategories()
+  const [users] = useUsers()
   const [dateFilter, setDateFilter] = useState('mtd')
   const [customStart, setCustomStart] = useState('')
   const [customEnd, setCustomEnd] = useState('')
@@ -79,22 +82,22 @@ export default function Overview() {
   )
 
   const perPersonTotals = useMemo(() => {
-    const totals = { soroush: 0, shiva: 0 }
+    const totals = Object.fromEntries(users.map((u) => [u.username, 0]))
     for (const t of transactions) {
       const amt = Number(t.amount)
       if (amt > 0 && t.owner in totals) totals[t.owner] += amt
     }
     return totals
-  }, [transactions])
+  }, [transactions, users])
 
   const earnedByPersonTotals = useMemo(() => {
-    const totals = { soroush: 0, shiva: 0 }
+    const totals = Object.fromEntries(users.map((u) => [u.username, 0]))
     for (const t of transactions) {
       const amt = Number(t.amount)
       if (amt < 0 && t.owner in totals) totals[t.owner] += Math.abs(amt)
     }
     return totals
-  }, [transactions])
+  }, [transactions, users])
 
   const breakdown = useMemo(() => {
     const totals = {}
@@ -138,12 +141,12 @@ export default function Overview() {
   const net = totalIncome - totalSpent
 
   const incomeByPerson = useMemo(() => {
-    const totals = { soroush: 0, shiva: 0 }
+    const totals = Object.fromEntries(users.map((u) => [u.username, 0]))
     for (const i of incomes) {
       if (i.owner in totals) totals[i.owner] += Number(i.amount)
     }
     return totals
-  }, [incomes])
+  }, [incomes, users])
 
   const trend = useMemo(() => {
     const totals = {}
@@ -174,8 +177,11 @@ export default function Overview() {
       >
         <select value={owner} onChange={(e) => setOwner(e.target.value)}>
           <option value="">Combined</option>
-          <option value="soroush">Soroush</option>
-          <option value="shiva">Shiva</option>
+          {users.map((u) => (
+            <option key={u.id} value={u.username}>
+              {u.username[0].toUpperCase() + u.username.slice(1)}
+            </option>
+          ))}
         </select>
       </DateFilter>
 
@@ -228,18 +234,15 @@ export default function Overview() {
             By person
           </div>
           <div className="person-stats">
-            <div>
-              <span className="legend-dot" style={{ background: OWNER_COLORS.soroush }} />
-              Soroush:{' '}
-              <strong>
-                ${(isCashInOnly ? earnedByPersonTotals.soroush : perPersonTotals.soroush).toFixed(2)}
-              </strong>
-            </div>
-            <div>
-              <span className="legend-dot" style={{ background: OWNER_COLORS.shiva }} />
-              Shiva:{' '}
-              <strong>${(isCashInOnly ? earnedByPersonTotals.shiva : perPersonTotals.shiva).toFixed(2)}</strong>
-            </div>
+            {users.map((u, i) => (
+              <div key={u.id}>
+                <span className="legend-dot" style={{ background: SLOT_COLORS[i] }} />
+                {u.username[0].toUpperCase() + u.username.slice(1)}:{' '}
+                <strong>
+                  ${(isCashInOnly ? earnedByPersonTotals[u.username] : perPersonTotals[u.username]).toFixed(2)}
+                </strong>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -330,14 +333,13 @@ export default function Overview() {
 
           {!owner && (
             <div className="person-stats" style={{ marginBottom: 10 }}>
-              <div>
-                <span className="legend-dot" style={{ background: OWNER_COLORS.soroush }} />
-                Soroush: <strong>${incomeByPerson.soroush.toFixed(2)}</strong>
-              </div>
-              <div>
-                <span className="legend-dot" style={{ background: OWNER_COLORS.shiva }} />
-                Shiva: <strong>${incomeByPerson.shiva.toFixed(2)}</strong>
-              </div>
+              {users.map((u, i) => (
+                <div key={u.id}>
+                  <span className="legend-dot" style={{ background: SLOT_COLORS[i] }} />
+                  {u.username[0].toUpperCase() + u.username.slice(1)}:{' '}
+                  <strong>${(incomeByPerson[u.username] ?? 0).toFixed(2)}</strong>
+                </div>
+              ))}
             </div>
           )}
 

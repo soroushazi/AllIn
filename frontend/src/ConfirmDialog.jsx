@@ -1,6 +1,15 @@
 import { useEffect } from 'react'
 
-export default function ConfirmDialog({ open, title, message, confirmLabel = 'Delete', cancelLabel = 'Cancel', onConfirm, onCancel }) {
+export default function ConfirmDialog({
+  open,
+  title,
+  message,
+  confirmLabel = 'Delete',
+  cancelLabel = 'Cancel',
+  confirmVariant = 'danger',
+  onConfirm,
+  onCancel,
+}) {
   useEffect(() => {
     if (!open) return
     function onKeyDown(e) {
@@ -21,7 +30,7 @@ export default function ConfirmDialog({ open, title, message, confirmLabel = 'De
           <button type="button" onClick={onCancel}>
             {cancelLabel}
           </button>
-          <button type="button" className="dialog-confirm" onClick={onConfirm}>
+          <button type="button" className={confirmVariant === 'primary' ? 'primary' : 'dialog-confirm'} onClick={onConfirm}>
             {confirmLabel}
           </button>
         </div>
