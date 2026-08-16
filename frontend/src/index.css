@@ -292,6 +292,13 @@ button.primary:disabled {
   cursor: default;
 }
 
+.dialog-confirm {
+  background: var(--danger);
+  color: #fff;
+  border-color: var(--danger);
+  font-weight: 600;
+}
+
 .link-button {
   background: none;
   border: none;
@@ -426,6 +433,11 @@ button.primary:disabled {
 
 .transaction-actions select {
   flex: 1;
+  min-width: 0;
+}
+
+.transaction-actions button {
+  flex-shrink: 0;
 }
 
 /* --- Budgets --- */
@@ -524,4 +536,55 @@ button.primary:disabled {
 .summary-list {
   margin: 0;
   padding-left: 18px;
+}
+
+/* --- Confirm dialog --- */
+
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(10, 10, 8, 0.5);
+  animation: dialog-overlay-in 0.15s ease-out;
+}
+
+.dialog-card {
+  width: 100%;
+  max-width: 360px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+  animation: dialog-card-in 0.15s ease-out;
+}
+
+.dialog-title {
+  margin: 0;
+  font-size: 1.0625rem;
+}
+
+.dialog-message {
+  margin: 0;
+  font-size: 0.9375rem;
+  line-height: 1.4;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+@keyframes dialog-overlay-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes dialog-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
 }

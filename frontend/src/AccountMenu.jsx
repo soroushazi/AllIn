@@ -8,6 +8,7 @@ const MENU_LINKS = [
   { to: '/cards', label: 'Cards' },
   { to: '/budgets', label: 'Budgets' },
   { to: '/categories', label: 'Categories' },
+  { to: '/networth-accounts', label: 'Net worth accounts' },
 ]
 
 export default function AccountMenu() {
@@ -32,7 +33,9 @@ export default function AccountMenu() {
 
       {open && (
         <div className="account-menu-dropdown">
-          <div className="account-menu-username">{user?.username}</div>
+          <div className="account-menu-username">
+            {user?.username ? user.username[0].toUpperCase() + user.username.slice(1) : ''}
+          </div>
           {MENU_LINKS.map((link) => (
             <NavLink key={link.to} to={link.to} className="account-menu-item" onClick={() => setOpen(false)}>
               {link.label}

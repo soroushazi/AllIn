@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api } from '../api'
 import { useCards } from '../hooks'
+import ConfirmDialog from '../ConfirmDialog'
 
 const OWNERS = ['soroush', 'shiva']
 const EMPTY_FORM = { owner: OWNERS[0], name: '', type: 'debit', header_row: '1' }
@@ -16,6 +17,7 @@ export default function Cards() {
   const [error, setError] = useState(null)
   const [creating, setCreating] = useState(false)
   const [savingId, setSavingId] = useState(null)
+  const [pendingDelete, setPendingDelete] = useState(null)
 
   function updateDraft(card, patch) {
     setDrafts((d) => ({ ...d, [card.id]: { ...(d[card.id] ?? baseDraft(card)), ...patch } }))
@@ -57,13 +59,9 @@ export default function Cards() {
     }
   }
 
-  async function handleDelete(card) {
-    if (
-      !window.confirm(
-        `Delete "${card.name}"? This also permanently deletes every transaction imported on this card - not just uncategorizes them.`,
-      )
-    )
-      return
+  async function confirmDelete() {
+    const card = pendingDelete
+    setPendingDelete(null)
     setError(null)
     try {
       await api.cards.remove(card.id)
@@ -164,7 +162,7 @@ export default function Cards() {
                 >
                   {savingId === card.id ? 'Saving...' : 'Save'}
                 </button>
-                <button type="button" className="link-button danger" onClick={() => handleDelete(card)}>
+                <button type="button" className="link-button danger" onClick={() => setPendingDelete(card)}>
                   Delete
                 </button>
               </div>
@@ -172,6 +170,17 @@ export default function Cards() {
           )
         })}
       </ul>
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title="Delete card?"
+        message={
+          pendingDelete &&
+          `"${pendingDelete.name}" and every transaction imported on it will be permanently deleted - not just uncategorized.`
+        }
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   )
 }

@@ -1,7 +1,7 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
 
-from .models import Card, Category, Income, Transaction
+from .models import Card, Category, Income, NetWorthAccount, NetWorthEntry, Transaction, YearlyExpense
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -24,6 +24,40 @@ class IncomeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Income
         fields = ["id", "owner", "date", "amount", "source"]
+
+
+class NetWorthAccountSerializer(serializers.ModelSerializer):
+    owner = serializers.SlugRelatedField(slug_field="username", queryset=User.objects.all())
+    is_liability = serializers.BooleanField(read_only=True)
+    latest_balance = serializers.SerializerMethodField()
+    latest_date = serializers.SerializerMethodField()
+
+    class Meta:
+        model = NetWorthAccount
+        fields = ["id", "owner", "name", "category", "is_liability", "latest_balance", "latest_date"]
+
+    def get_latest_balance(self, obj):
+        latest = obj.entries.first()
+        return latest.balance if latest else None
+
+    def get_latest_date(self, obj):
+        latest = obj.entries.first()
+        return latest.date if latest else None
+
+
+class NetWorthEntrySerializer(serializers.ModelSerializer):
+    account_name = serializers.CharField(source="account.name", read_only=True)
+    owner = serializers.CharField(source="account.owner.username", read_only=True)
+
+    class Meta:
+        model = NetWorthEntry
+        fields = ["id", "account", "account_name", "owner", "date", "balance"]
+
+
+class YearlyExpenseSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = YearlyExpense
+        fields = ["id", "scope", "amount"]
 
 
 class TransactionSerializer(serializers.ModelSerializer):

@@ -100,4 +100,23 @@ export const api = {
 
   import: (formData) => request('/api/import/', { method: 'POST', body: formData, isForm: true }),
   importConfirm: (rows) => request('/api/import/confirm/', { method: 'POST', body: { rows } }),
+
+  networth: {
+    accounts: {
+      list: (params) => request(`/api/networth/accounts/${buildQuery(params)}`),
+      create: (data) => request('/api/networth/accounts/', { method: 'POST', body: data }),
+      update: (id, data) => request(`/api/networth/accounts/${id}/`, { method: 'PATCH', body: data }),
+      remove: (id) => request(`/api/networth/accounts/${id}/`, { method: 'DELETE' }),
+    },
+    entries: {
+      list: (params) => request(`/api/networth/entries/${buildQuery(params)}`),
+      create: (data) => request('/api/networth/entries/', { method: 'POST', body: data }),
+      remove: (id) => request(`/api/networth/entries/${id}/`, { method: 'DELETE' }),
+    },
+    yearlyExpense: {
+      list: () => request('/api/networth/yearly-expense/'),
+      set: (scope, amount) => request('/api/networth/yearly-expense/', { method: 'POST', body: { scope, amount } }),
+    },
+    summary: () => request('/api/networth/summary/'),
+  },
 }

@@ -1,6 +1,16 @@
 from django.contrib import admin
 
-from .models import Card, Category, ColumnMapping, Income, MerchantRule, Transaction
+from .models import (
+    Card,
+    Category,
+    ColumnMapping,
+    Income,
+    MerchantRule,
+    NetWorthAccount,
+    NetWorthEntry,
+    Transaction,
+    YearlyExpense,
+)
 
 
 @admin.register(Category)
@@ -38,3 +48,21 @@ class IncomeAdmin(admin.ModelAdmin):
     list_display = ["date", "owner", "amount", "source"]
     list_filter = ["owner"]
     date_hierarchy = "date"
+
+
+@admin.register(NetWorthAccount)
+class NetWorthAccountAdmin(admin.ModelAdmin):
+    list_display = ["name", "owner", "category"]
+    list_filter = ["owner", "category"]
+
+
+@admin.register(NetWorthEntry)
+class NetWorthEntryAdmin(admin.ModelAdmin):
+    list_display = ["account", "date", "balance"]
+    list_filter = ["account__owner"]
+    date_hierarchy = "date"
+
+
+@admin.register(YearlyExpense)
+class YearlyExpenseAdmin(admin.ModelAdmin):
+    list_display = ["scope", "amount"]

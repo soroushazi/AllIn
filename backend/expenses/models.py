@@ -125,6 +125,76 @@ class MerchantRule(models.Model):
         super().save(*args, **kwargs)
 
 
+class NetWorthAccount(models.Model):
+    """One asset or liability an owner tracks toward the Financial Freedom
+    goal - e.g. "SoFi Savings", "Robinhood", "Student Loan". Balances are
+    logged over time via NetWorthEntry, not stored here, so net worth can be
+    charted historically the same way spending can."""
+
+    class AccountCategory(models.TextChoices):
+        SAVINGS = "savings", "Savings"
+        INVESTMENT = "investment", "Investment"
+        LOAN = "loan", "Loan"
+        ASSET = "asset", "Other asset"
+        LIABILITY = "liability", "Other liability"
+
+    LIABILITY_CATEGORIES = {AccountCategory.LOAN, AccountCategory.LIABILITY}
+
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="networth_accounts")
+    name = models.CharField(max_length=100, help_text="e.g. SoFi Savings, Robinhood, Student Loan")
+    category = models.CharField(max_length=12, choices=AccountCategory.choices)
+
+    class Meta:
+        ordering = ["owner", "category", "name"]
+        unique_together = [("owner", "name")]
+
+    def __str__(self):
+        return f"{self.owner} - {self.name}"
+
+    @property
+    def is_liability(self):
+        return self.category in self.LIABILITY_CATEGORIES
+
+
+class NetWorthEntry(models.Model):
+    """A logged balance snapshot for one account on one date - manually
+    entered per occurrence (same pattern as Income), so net worth history is
+    derived from these rather than stored as a running total."""
+
+    account = models.ForeignKey(NetWorthAccount, on_delete=models.CASCADE, related_name="entries")
+    date = models.DateField()
+    balance = models.DecimalField(
+        max_digits=12, decimal_places=2, help_text="Always positive - sign comes from the account's category"
+    )
+
+    class Meta:
+        ordering = ["-date", "-id"]
+        unique_together = [("account", "date")]
+
+    def __str__(self):
+        return f"{self.account} {self.date} {self.balance}"
+
+
+class YearlyExpense(models.Model):
+    """An answer to 'what's an average yearly expense' - a single current
+    estimate per scope, not a history. Scope is either the household as a
+    whole (one shared number) or one owner's own estimate - whichever the
+    household prefers to answer with. The Financial Freedom number is 25x
+    the household scope's amount if set, else 25x the sum of whichever
+    per-owner amounts are set."""
+
+    class Scope(models.TextChoices):
+        HOUSEHOLD = "household", "Household"
+        SOROUSH = "soroush", "Soroush"
+        SHIVA = "shiva", "Shiva"
+
+    scope = models.CharField(max_length=10, choices=Scope.choices, unique=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+
+    def __str__(self):
+        return f"{self.scope} {self.amount}"
+
+
 class Income(models.Model):
     """A manually-logged paycheck (or other income). Amounts vary per entry -
     biweekly paychecks aren't a fixed number, so this is entered per

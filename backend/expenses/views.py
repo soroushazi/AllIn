@@ -1,14 +1,25 @@
+from decimal import Decimal
+
 from django.db.models import Sum
 from django.db.models.functions import Abs
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import mixins, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Card, Category, Income, MerchantRule, Transaction
-from .serializers import CardSerializer, CategorySerializer, IncomeSerializer, TransactionSerializer
+from .models import Card, Category, Income, MerchantRule, NetWorthAccount, NetWorthEntry, Transaction, YearlyExpense
+from .serializers import (
+    CardSerializer,
+    CategorySerializer,
+    IncomeSerializer,
+    NetWorthAccountSerializer,
+    NetWorthEntrySerializer,
+    TransactionSerializer,
+    YearlyExpenseSerializer,
+)
 from .services import (
     UnparseableFileError,
     commit_import_rows,
@@ -16,6 +27,11 @@ from .services import (
     get_period_range,
     import_transactions,
 )
+
+# Fixed motivational checkpoints on the way to the freedom number - not
+# user-configurable, same for every household using this app.
+NET_WORTH_MILESTONES = [1000, 10000, 50000, 100000, 200000]
+FREEDOM_MULTIPLIER = 25
 
 
 class CategoryViewSet(viewsets.ModelViewSet):
@@ -48,6 +64,137 @@ class IncomeViewSet(viewsets.ModelViewSet):
             qs = qs.filter(date__lte=date_to)
 
         return qs
+
+
+class NetWorthAccountViewSet(viewsets.ModelViewSet):
+    serializer_class = NetWorthAccountSerializer
+
+    def get_queryset(self):
+        qs = NetWorthAccount.objects.select_related("owner").prefetch_related("entries")
+        owner = self.request.query_params.get("owner")
+        if owner:
+            qs = qs.filter(owner__username=owner)
+        return qs
+
+
+class NetWorthEntryViewSet(viewsets.ModelViewSet):
+    serializer_class = NetWorthEntrySerializer
+
+    def get_queryset(self):
+        qs = NetWorthEntry.objects.select_related("account", "account__owner")
+        params = self.request.query_params
+
+        account = params.get("account")
+        if account:
+            qs = qs.filter(account_id=account)
+
+        owner = params.get("owner")
+        if owner:
+            qs = qs.filter(account__owner__username=owner)
+
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        # Re-logging the same account+date (e.g. correcting today's balance
+        # after already checking it once) should update in place, not 409 -
+        # unique_together would otherwise reject it as a duplicate.
+        account_id = request.data.get("account")
+        entry_date = request.data.get("date")
+        if account_id and entry_date:
+            existing = NetWorthEntry.objects.filter(account_id=account_id, date=entry_date).first()
+            if existing:
+                serializer = self.get_serializer(existing, data=request.data, partial=True)
+                serializer.is_valid(raise_exception=True)
+                serializer.save()
+                return Response(serializer.data)
+        return super().create(request, *args, **kwargs)
+
+
+def household_yearly_expense_from(expenses):
+    """expenses is a {scope: amount} dict. The household scope, if set,
+    always wins outright (it's a direct answer, not a derived one);
+    otherwise fall back to summing whichever per-owner scopes are set."""
+    if "household" in expenses:
+        return expenses["household"]
+    individual = [v for k, v in expenses.items() if k in ("soroush", "shiva")]
+    return sum(individual) if individual else None
+
+
+class YearlyExpenseView(APIView):
+    """The answer to 'what's an average yearly expense' - either one shared
+    household number or per-owner numbers (household wins if both are set -
+    see household_yearly_expense_from). GET returns all set scopes as
+    {scope: amount}, POST sets one scope's value (any user can set any
+    scope, same no-permissions pattern as the rest of this app)."""
+
+    def get(self, request):
+        values = {ye.scope: ye.amount for ye in YearlyExpense.objects.all()}
+        return Response(values)
+
+    def post(self, request):
+        scope = request.data.get("scope")
+        amount = request.data.get("amount")
+        if scope not in YearlyExpense.Scope.values or amount in (None, ""):
+            return Response({"detail": "a valid scope and amount are required"}, status=400)
+        yearly_expense, _ = YearlyExpense.objects.update_or_create(scope=scope, defaults={"amount": amount})
+        return Response(YearlyExpenseSerializer(yearly_expense).data)
+
+
+class FreedomSummaryView(APIView):
+    """Computed net worth + freedom-goal progress. Net worth on any date is
+    derived on the fly from each account's latest NetWorthEntry at or before
+    that date - assets add, liabilities subtract (see
+    NetWorthAccount.is_liability) - rather than stored as a running total, so
+    it stays correct no matter what order entries are logged in."""
+
+    def get(self, request):
+        accounts = list(NetWorthAccount.objects.select_related("owner").prefetch_related("entries"))
+        yearly_expenses = {ye.scope: ye.amount for ye in YearlyExpense.objects.all()}
+
+        household_yearly_expense = household_yearly_expense_from(yearly_expenses)
+        freedom_number = household_yearly_expense * FREEDOM_MULTIPLIER if household_yearly_expense else None
+
+        def net_worth_as_of(as_of_date):
+            total = Decimal("0")
+            by_owner = {}
+            for account in accounts:
+                # entries are prefetched ordered -date,-id (see Meta.ordering),
+                # so the first one <= as_of_date is the latest known balance.
+                entry = next((e for e in account.entries.all() if e.date <= as_of_date), None)
+                if entry is None:
+                    continue
+                signed = -entry.balance if account.is_liability else entry.balance
+                total += signed
+                by_owner[account.owner.username] = by_owner.get(account.owner.username, Decimal("0")) + signed
+            return total, by_owner
+
+        today = timezone.localdate()
+        current_net_worth, by_owner = net_worth_as_of(today)
+
+        all_dates = sorted({entry.date for account in accounts for entry in account.entries.all()})
+        history = [{"date": d.isoformat(), "net_worth": net_worth_as_of(d)[0]} for d in all_dates]
+
+        goals = [Decimal(m) for m in NET_WORTH_MILESTONES]
+        if freedom_number:
+            goals.append(freedom_number)
+        goals.sort()
+        next_goal = next((g for g in goals if g > current_net_worth), None)
+
+        return Response(
+            {
+                "current_net_worth": current_net_worth,
+                "by_owner": by_owner,
+                "yearly_expenses": yearly_expenses,
+                "household_yearly_expense": household_yearly_expense,
+                "freedom_number": freedom_number,
+                "milestones": NET_WORTH_MILESTONES,
+                "next_goal": next_goal,
+                "amount_to_next_goal": (next_goal - current_net_worth) if next_goal else None,
+                "amount_to_freedom": (freedom_number - current_net_worth) if freedom_number else None,
+                "percent_to_freedom": (current_net_worth / freedom_number * 100) if freedom_number else None,
+                "history": history,
+            }
+        )
 
 
 class TransactionViewSet(

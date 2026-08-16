@@ -9,7 +9,11 @@ export default function Account() {
       <div className="card stack">
         <label>
           Username
-          <input type="text" value={user?.username ?? ''} disabled />
+          <input
+            type="text"
+            value={user?.username ? user.username[0].toUpperCase() + user.username.slice(1) : ''}
+            disabled
+          />
         </label>
         <p className="muted small">Changing your name or password is coming soon.</p>
       </div>

@@ -10,6 +10,7 @@ import Categories from './pages/Categories'
 import Cards from './pages/Cards'
 import Voice from './pages/Voice'
 import FinancialFreedom from './pages/FinancialFreedom'
+import NetWorthAccounts from './pages/NetWorthAccounts'
 import Account from './pages/Account'
 
 function Gate() {
@@ -38,6 +39,7 @@ function Gate() {
         <Route path="cards" element={<Cards />} />
         <Route path="voice" element={<Voice />} />
         <Route path="financial-freedom" element={<FinancialFreedom />} />
+        <Route path="networth-accounts" element={<NetWorthAccounts />} />
         <Route path="account" element={<Account />} />
       </Route>
     </Routes>

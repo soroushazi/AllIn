@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api } from '../api'
 import { useCategories } from '../hooks'
+import ConfirmDialog from '../ConfirmDialog'
 
 const EMPTY_FORM = { name: '', color: '#2a78d6', weekly_budget: '', monthly_budget: '' }
 
@@ -29,6 +30,7 @@ export default function Categories() {
   const [error, setError] = useState(null)
   const [creating, setCreating] = useState(false)
   const [savingId, setSavingId] = useState(null)
+  const [pendingDelete, setPendingDelete] = useState(null)
 
   function updateDraft(cat, patch) {
     setDrafts((d) => ({ ...d, [cat.id]: { ...(d[cat.id] ?? baseDraft(cat)), ...patch } }))
@@ -70,8 +72,9 @@ export default function Categories() {
     }
   }
 
-  async function handleDelete(cat) {
-    if (!window.confirm(`Delete "${cat.name}"? Its transactions become uncategorized.`)) return
+  async function confirmDelete() {
+    const cat = pendingDelete
+    setPendingDelete(null)
     setError(null)
     try {
       await api.categories.remove(cat.id)
@@ -180,7 +183,7 @@ export default function Categories() {
                 >
                   {savingId === cat.id ? 'Saving...' : 'Save'}
                 </button>
-                <button type="button" className="link-button danger" onClick={() => handleDelete(cat)}>
+                <button type="button" className="link-button danger" onClick={() => setPendingDelete(cat)}>
                   Delete
                 </button>
               </div>
@@ -188,6 +191,14 @@ export default function Categories() {
           )
         })}
       </ul>
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title="Delete category?"
+        message={pendingDelete && `"${pendingDelete.name}" will be removed. Its transactions become uncategorized.`}
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   )
 }

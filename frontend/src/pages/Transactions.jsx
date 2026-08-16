@@ -3,6 +3,7 @@ import { api } from '../api'
 import { useCards, useCategories } from '../hooks'
 import DateFilter from '../DateFilter'
 import { getDateRange, toISO } from '../dateFilters'
+import ConfirmDialog from '../ConfirmDialog'
 
 export default function Transactions() {
   const [categories] = useCategories()
@@ -22,6 +23,7 @@ export default function Transactions() {
   const [transactions, setTransactions] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [pendingDelete, setPendingDelete] = useState(null)
 
   const [rangeStart, rangeEnd] = useMemo(
     () => getDateRange(dateFilter, customStart, customEnd),
@@ -62,11 +64,13 @@ export default function Transactions() {
     }
   }
 
-  async function handleDelete(id) {
+  async function confirmDelete() {
+    const t = pendingDelete
+    setPendingDelete(null)
     const previous = transactions
-    setTransactions((txs) => txs.filter((t) => t.id !== id))
+    setTransactions((txs) => txs.filter((tx) => tx.id !== t.id))
     try {
-      await api.transactions.remove(id)
+      await api.transactions.remove(t.id)
     } catch (err) {
       setTransactions(previous)
       setError(err.message)
@@ -182,7 +186,7 @@ export default function Transactions() {
                     </option>
                   ))}
                 </select>
-                <button className="link-button danger" onClick={() => handleDelete(t.id)}>
+                <button className="link-button danger" onClick={() => setPendingDelete(t)}>
                   Delete
                 </button>
               </div>
@@ -190,6 +194,17 @@ export default function Transactions() {
           )
         })}
       </ul>
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title="Delete transaction?"
+        message={
+          pendingDelete &&
+          `"${pendingDelete.description}" ($${Math.abs(Number(pendingDelete.amount)).toFixed(2)}) will be permanently deleted.`
+        }
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   )
 }

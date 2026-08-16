@@ -105,6 +105,22 @@ Why these choices, so they don't get re-litigated:
   Transaction. Feeds the Overview "Income vs spending" card.
 - **VoiceDraft** (phase 2) — parsed-but-unconfirmed transaction awaiting one-tap
   confirmation. Never auto-commits into Transaction.
+- **NetWorthAccount** — owner, name, category (`savings`/`investment`/`loan`/
+  `asset`/`liability` — the last two are free-form catch-alls for anything
+  beyond the three named buckets). Powers the Financial Freedom tab. Doesn't
+  store a balance itself — see NetWorthEntry.
+- **NetWorthEntry** — account (FK), date, balance (always positive; sign
+  comes from the account's category via `is_liability`). A manually-logged
+  snapshot per occurrence, same pattern as Income, so net worth can be
+  charted historically — current net worth for any date is derived from
+  each account's latest entry at or before that date, not stored as a
+  running total.
+- **YearlyExpense** — scope (`household`/`soroush`/`shiva`, one row per
+  scope), amount. The answer to "what's an average yearly expense" —
+  either one shared household number or per-person numbers, toggleable in
+  the UI (Net worth accounts settings) - a single current value per scope,
+  not a history. The Financial Freedom number is 25x the `household` scope's
+  amount if set, else 25x the sum of whichever per-person scopes are set.
 
 ## Key principles
 
@@ -1137,15 +1153,284 @@ synthetic file via real HTTP (curl) and headless Playwright:
   transactions). `npm run build`/`npm run lint` and `python manage.py check`
   clean throughout.
 
+#### Delete confirm dialog + two live UI bugs fixed - 2026-08-16
+
+User asked for an in-app confirm popup before deleting a transaction,
+category, or card (Categories/Cards already used `window.confirm`;
+Transactions didn't). Built `frontend/src/ConfirmDialog.jsx` - a reusable
+card-styled dialog (title/message/Cancel/Delete, dismissible via backdrop
+click or Escape) - reusing the app's existing `.card` look rather than the
+native browser popup, and wired it into Transactions/Categories/Cards, each
+tracking a `pendingDelete` item in state instead of calling
+`window.confirm` directly.
+
+User then reported two live bugs in the result: the transaction row's
+Delete button was invisible ("red on red"), and on phone width it rendered
+outside the transaction card/off-screen. Root-caused both via direct DOM
+measurement (Playwright `getBoundingClientRect`/`getComputedStyle`), not
+guessed:
+1. The dialog's new `button.danger` CSS rule (solid red fill, added for its
+   own Delete button) collided with the pre-existing `.link-button.danger`
+   class already used on every row-level Delete trigger (Transactions,
+   Categories, Cards, and the Import screen's income-entry delete) - CSS
+   specificity split text-color and background-color across the two rules,
+   landing on red-on-red. Fixed by renaming the dialog's own button to a
+   non-colliding class, `.dialog-confirm`.
+2. `.transaction-actions select` (the row's category dropdown) had no
+   `min-width` override, so flexbox refused to shrink it below its content
+   width on transactions with long category names (e.g. "Merchandise &
+   Supplies-Groceries"), pushing the Delete button up to 33px past a
+   375px-wide viewport. Fixed with `min-width: 0` on the select (so it
+   truncates with an ellipsis) and `flex-shrink: 0` on the button.
+Verified at 375px in both light and dark mode, including the row with the
+longest real category name, via a throwaway account/data (deleted
+afterward); `npm run build`/`npm run lint` clean; real data (8 cards, 27
+categories, 41 transactions, 6 income entries) unaffected throughout.
+
+#### Financial Freedom: net worth tracker + freedom-number goal - 2026-08-16
+
+Built out the previously-stubbed Financial Freedom tab per the user's spec:
+each owner enters their savings/investment/loan/other asset-liability
+accounts and a personal "average yearly expense" estimate; the freedom
+number is 25x the *combined* household yearly expense (both owners'
+estimates summed - the literal reading of "25 * medium yearly expense for
+household"); progress is shown against that freedom number plus five fixed
+motivational milestones ($1k/$10k/$50k/$100k/$200k, not user-configurable);
+net worth is derived from manually-logged balance snapshots per account
+(same "logged per occurrence" pattern as Income) rather than tied to the
+Transaction/Income ledger directly - deliberately kept separate, since
+spending categories and account balances are different concepts and tying
+them together would have meant guessing at a reconciliation model the user
+never asked for.
+
+**Backend** (migration `0008_networthaccount_yearlyexpense_networthentry`):
+- `NetWorthAccount` (owner, name, category - `savings`/`investment`/`loan`/
+  `asset`/`liability`, the last two as free-form catch-alls for anything
+  beyond the three named buckets the user called out; `is_liability`
+  derived from category) and `NetWorthEntry` (account FK, date, balance -
+  `unique_together` on account+date). `NetWorthAccountViewSet`/
+  `NetWorthEntryViewSet` (full CRUD, same filter-by-owner pattern as
+  Income); `NetWorthEntryViewSet.create()` upserts on a duplicate
+  account+date instead of 409ing, since re-checking and re-logging today's
+  already-logged balance is a plausible normal action, not an error.
+- `YearlyExpense` (owner OneToOne, amount) - a single current value per
+  owner, not a history (unlike net worth itself) - via `YearlyExpenseView`
+  (GET returns both as `{username: amount}`, POST sets one owner's value;
+  either user can set either owner's value, same no-permissions pattern as
+  the rest of the app).
+- `FreedomSummaryView` (`/api/networth/summary/`) - computed, on the fly,
+  no caching (2-user personal scale doesn't need it): net worth as of any
+  date from each account's latest entry at-or-before that date (assets add,
+  liabilities subtract), current household net worth + per-owner
+  breakdown, `freedom_number` (null until both/either yearly expense is
+  set), the fixed milestone list, `next_goal`/`amount_to_next_goal`/
+  `amount_to_freedom`/`percent_to_freedom`, and a `history` series (one
+  point per distinct entry date across all accounts, each computed via the
+  same as-of-date logic) for the trend chart.
+- Verified the full computation end-to-end via curl against a throwaway
+  account/data before touching the frontend: net worth math, the upsert
+  behavior (re-logging the same account+date updates in place, confirmed
+  via a before/after read), and history fill-forward (a later account's
+  entry doesn't retroactively affect an earlier date's computed total) all
+  confirmed correct against hand-computed expected values.
+
+**Frontend** (`pages/FinancialFreedom.jsx`, full rewrite of the stub):
+stat tiles for current net worth and the next unmet goal (whichever of the
+five milestones or the freedom number is soonest); a by-person net worth
+breakdown (reusing Overview's `person-stats`/`legend-dot` pattern); a
+"Path to freedom" list - one row per milestone plus the freedom goal,
+each with its own mini progress bar and "$X to go"/"Reached" - deliberately
+built as a list rather than a single bar with six crowded labels, applying
+the same lesson already learned this project from the Overview category-
+chart rebuild (2026-08-15: Recharts labels overlapping on mobile); a net
+worth history chart (Recharts `AreaChart`, same dark-mode-safe
+`itemStyle`/`labelStyle` Tooltip fix as Overview's spend trend), shown only
+once 2+ history points exist; then the setup forms - average yearly
+expense (one input + Save per owner) and accounts (new-account form +
+list, each account showing its latest balance and an inline "log a new
+balance" mini-form, Delete behind the new `ConfirmDialog`). Guarded two
+edge cases found while verifying: a negative net worth (liabilities >
+assets, plausible for e.g. a household early in paying down loans) both
+clamps every progress-bar width to 0% instead of going negative, and
+displays correctly as `-$5,000` rather than `$-5,000`.
+
+Verified end-to-end via headless Playwright at 375px width, light and dark
+mode, using a throwaway account/data (deleted afterward): empty state,
+setting both owners' yearly expenses, adding a savings account and logging
+a balance (freedom number and goals list update correctly), a second
+older-dated balance producing a real 2-point history chart, the delete
+confirm dialog, and a deliberately negative-net-worth scenario (loan
+account with no offsetting assets) - all rendered correctly with zero
+console errors. `npm run build`/`npm run lint` and `python manage.py check`
+clean throughout. Real data (8 cards, 27 categories, 41 transactions, 6
+income entries) confirmed unaffected; no real net worth accounts or yearly
+expenses have been entered yet - next step is the user's own real setup.
+
+#### Financial Freedom simplified + net worth setup split out to its own settings page - 2026-08-16, right after
+
+User tried the first Financial Freedom build and found the "all 6 goals at
+once" list overwhelming/discouraging, and asked for setup (accounts,
+yearly expense) to move out of the daily-use tab entirely, into
+"set once, revisit rarely" settings - same reasoning already applied to
+Budgets/Categories/Cards in the 2026-08-15 nav restructure. Two changes,
+no backend changes needed (the existing `FreedomSummaryView`/
+`NetWorthAccountViewSet`/`YearlyExpenseView` already returned everything
+needed):
+
+- **`pages/FinancialFreedom.jsx` cut down to just the daily-glance view**:
+  household net worth (stat tile) → by-person breakdown → exactly two
+  progress bars, always both, each showing a percentage: "Next goal"
+  (whichever of the five fixed milestones or the freedom number is
+  soonest - `current / next.amount * 100`, capped 0-100) and "Financial
+  freedom" (`current / freedom_number * 100`, with a prompt in place of the
+  bar when no yearly expense is set yet). The old "Path to freedom" list
+  (all 6 goals shown at once) and the account-management card are both
+  gone from this page - removed, not collapsed, per the user's explicit
+  "seeing all the steps at once is discouraging."
+- **New `pages/NetWorthAccounts.jsx`** (route `/networth-accounts`, added
+  to `AccountMenu.jsx`'s `MENU_LINKS` alongside Cards/Budgets/Categories):
+  average yearly expense (per owner, moved verbatim from the old page) at
+  top, then **Assets** and **Liabilities** as two separate segments (split
+  by `NetWorthAccount.category` - savings/investment/other-asset vs. loan/
+  other-liability) - each its own card with a header total (`$X`) and a
+  bar (both bars scaled to the same `max(totalAssets, totalLiabilities)`
+  so their relative size is visually comparable) plus its own list of
+  accounts (name, category, latest balance, inline log-balance form,
+  delete). Adding a new account is a native `<details>`/`<summary>`
+  "Add account" disclosure below both segments, collapsed by default -
+  same zero-JS collapsible pattern already used for Import's "More
+  information" sections, confirmed collapsed-by-default via a direct
+  `element.open` check in Playwright, not just visually.
+
+Root-caused one thing during verification that turned out not to be a real
+bug: a test run produced 400s on account creation - traced to the test
+script reusing account names across two colorScheme runs without cleanup
+in between, correctly rejected by the pre-existing `unique_together =
+[("owner", "name")]` constraint (confirmed by replaying the same payload
+directly through `NetWorthAccountSerializer` in a shell and reading the
+validation error), not an application bug.
+
+Verified end-to-end via headless Playwright at 375px width, light and dark
+mode, with a throwaway account/data (deleted afterward, confirmed via a
+direct DB count): empty states for both pages, setting both owners'
+yearly expenses, adding one asset and one liability account with balances,
+confirming the two Financial Freedom bars update correctly (percentage and
+"$X to go" math checked against the underlying numbers), and the
+`NetWorthAccounts` link appearing correctly in the hamburger menu. `npm
+run build`/`npm run lint` and `python manage.py check` clean throughout.
+Real data (8 cards, 27 categories, 41 transactions, 6 income entries)
+confirmed unaffected; still no real net worth accounts/yearly expenses
+entered - next step is the user's own real setup via the new settings page.
+
+#### Financial Freedom v3: household/individual expense toggle, assets & liabilities on the daily tab too - 2026-08-16, right after
+
+User's follow-up correction to the v2 split: the daily-use/settings split
+itself was right, but two things landed in the wrong place, plus a real
+layout bug:
+1. Average yearly expense should support **either** a single shared
+   household number **or** per-person numbers, toggleable - not two
+   always-visible per-person inputs. "It doesn't matter [which], I think
+   it's good to add household as well."
+2. The **Assets/Liabilities segments belong on the Financial Freedom tab
+   itself** (the user's original ask), not only in settings - settings
+   keeps them too (that's where "Add account" and balance-logging/delete
+   live), but Financial Freedom should *show* them (read-only) as part of
+   the daily glance, specifically below a "Path to financial freedom" bar
+   (get to 25x household yearly expense) that sits under the existing
+   "Next goal" bar.
+3. The household net worth tile wasn't taking the full card width -
+   traced to a leftover inline `alignSelf: 'flex-start'` style from the
+   v2 build (meant to keep it from stretching in a two-tile row that no
+   longer exists) overriding the `.stack` flex column's default
+   stretch-to-fill behavior. Removed; no CSS changes needed since every
+   other card in this app already relies on that same default stretch.
+
+**Backend**: `YearlyExpense.owner` (FK to User) replaced with `scope`
+(`CharField`, choices `household`/`soroush`/`shiva`, unique) - migration
+`0009_remove_yearlyexpense_owner_yearlyexpense_scope` (no real data
+existed yet, confirmed via the ORM before migrating, so this was a clean
+replacement, not a data migration). `YearlyExpenseView` GET now returns
+`{scope: amount}` for whichever scopes are set; POST takes `{scope,
+amount}`. New `household_yearly_expense_from(expenses)` helper in
+`views.py`, used by `FreedomSummaryView`: if a `household` scope value is
+set, it wins outright (a direct answer, not derived); otherwise falls back
+to summing whichever of `soroush`/`shiva` are set - same "household
+overrides, else sum individuals" behavior confirmed end-to-end via curl
+(set soroush=25000 + shiva=15000 → household_yearly_expense 40000 →
+freedom_number 1,000,000; then set household=50000 directly → overrides
+to household_yearly_expense 50000 → freedom_number 1,250,000, individual
+values untouched but no longer used).
+
+**Frontend**:
+- `NetWorthAccounts.jsx`'s yearly-expense card now uses a three-way
+  `.user-toggle` (Household/Soroush/Shiva - the same segmented-pill
+  component already used for the Login screen's person picker) instead of
+  two stacked inputs. Switching scopes swaps in that scope's already-
+  fetched value via a `useEffect` keyed on `[expenses, expenseScope]`
+  (kept as an effect rather than inline in the scope-change handler
+  specifically to avoid a stale-closure lint warning from `load()`
+  otherwise needing `expenseScope` in scope - `npm run lint` stayed
+  clean). Assets/Liabilities segments + "Add account" disclosure are
+  unchanged from v2 - confirmed still fully functional (log balance,
+  delete) since this page remains the one place that manages accounts.
+- `FinancialFreedom.jsx` reordered to the user's explicit spec: net worth
+  (now full-width) → by-person → Next goal bar (unchanged) → new "Path to
+  financial freedom" bar (same 25x-yearly-expense math as before, just
+  re-labeled and given its own small header to match the user's wording)
+  → **new read-only Assets and Liabilities segments** (a small local
+  `Segment` component - title/total/bar/account list, no log-balance or
+  delete controls, since editing stays settings-only) → the net-worth-
+  over-time chart at the bottom, unchanged. Fetches both
+  `api.networth.summary()` and `api.networth.accounts.list()` now (was
+  summary-only in v2).
+
+Verified end-to-end via headless Playwright at 375px width, light and
+dark mode, with a throwaway account/data (deleted afterward, confirmed via
+a direct DB count): the toggle correctly shows an empty input when
+switching to a scope with no value set, and correctly preserves the
+household value when switching away and back (i.e. saving Soroush's value
+doesn't leak into or overwrite the household field); net worth tile width
+measured directly (343px = the 375px viewport minus the page's 16px
+padding on each side - genuinely full-width, not just visually close);
+Assets/Liabilities segments render identically in structure on both pages
+with correct totals/bars/lists. `npm run build`/`npm run lint` and `python
+manage.py check` clean throughout. Real data (8 cards, 27 categories, 41
+transactions, 6 income entries) confirmed unaffected; still no real net
+worth accounts or yearly expenses entered - next step is still the user's
+own real setup.
+
 Key frontend files: `frontend/src/api.js` (API client), `AuthContext.jsx`,
 `App.jsx` + `Layout.jsx` (routing/shell), `AccountMenu.jsx` (account
-dropdown), `icons.jsx` (inline SVG icons), `DateFilter.jsx` +
+dropdown, incl. the Net worth accounts link), `icons.jsx` (inline SVG
+icons), `ConfirmDialog.jsx` (shared card-styled confirm dialog, used by
+Transactions/Categories/Cards/`NetWorthAccounts`), `DateFilter.jsx` +
 `dateFilters.js` (shared date-range filter, used by Overview and
-Transactions), `pages/*.jsx` (the nine screens, incl. the import-review
-step in `Import.jsx`), `index.css` (all styling, light/dark via
+Transactions), `pages/*.jsx` (the ten screens, incl. the import-review
+step in `Import.jsx`, the daily-glance net worth progress + read-only
+asset/liability segments in `FinancialFreedom.jsx`, and its setup
+counterpart - yearly expense toggle, full account management - in
+`NetWorthAccounts.jsx`), `index.css` (all styling, light/dark via
 `prefers-color-scheme`), `vite.config.js` (dev server + `/api` proxy).
 Key backend files: `backend/expenses/{models,views,serializers,services,auth,urls}.py`,
 `backend/config/settings.py` (CORS/CSRF/ALLOWED_HOSTS, incl. Codespaces auto-detect).
+
+#### Display-only username capitalization fix - 2026-08-16, right after
+
+User noticed "soroush"/"shiva" showing lowercase somewhere in the UI.
+Found two spots that displayed the raw `user.username` directly instead of
+capitalizing it the way every other place in the app already does (the
+`o[0].toUpperCase() + o.slice(1)` pattern used throughout Login/Cards/
+Transactions/etc.): the hamburger account-menu header
+(`AccountMenu.jsx`) and the read-only Username field on the Account
+settings screen (`pages/Account.jsx`). Fixed both to capitalize for
+display only - the underlying Django `username` values (and everything
+sent to `/api/auth/login/`) stay lowercase, since that's the real login
+credential tied to the actual `soroush`/`shiva` accounts and changing it
+would have broken sign-in. Verified with a throwaway lowercase-username
+account: login still succeeds end-to-end, and both spots now render the
+capitalized form ("Verifytemp"). Real accounts confirmed unaffected
+(`soroush`, `shiva` still the only two users, unchanged). `npm run
+build`/`npm run lint` clean.
 
 ### Phase 2 — Voice capture
 - [ ] `MediaRecorder` audio capture in the PWA
