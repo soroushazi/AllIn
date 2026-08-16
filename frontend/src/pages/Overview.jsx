@@ -1,75 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis, AreaChart, Area } from 'recharts'
+import { CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, AreaChart, Area } from 'recharts'
 import { api } from '../api'
 import { useCategories } from '../hooks'
-
-function toISO(d) {
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
-
-const MONTH_NAMES = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
-]
-
-function monthRange(year, monthIndex) {
-  return [new Date(year, monthIndex, 1), new Date(year, monthIndex + 1, 0)]
-}
-
-// Last 12 months (including the current one), newest first - for the
-// "specific month" picker.
-function getRecentMonthOptions(count = 12) {
-  const today = new Date()
-  const options = []
-  for (let i = 0; i < count; i++) {
-    const d = new Date(today.getFullYear(), today.getMonth() - i, 1)
-    options.push({
-      value: `month:${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
-      label: `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`,
-    })
-  }
-  return options
-}
-
-function getDateRange(dateFilter, customStart, customEnd) {
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-
-  if (dateFilter === 'custom') {
-    if (customStart && customEnd) return [new Date(customStart), new Date(customEnd)]
-    return [today, today]
-  }
-
-  if (dateFilter.startsWith('month:')) {
-    const [year, month] = dateFilter.slice(6).split('-').map(Number)
-    return monthRange(year, month - 1)
-  }
-
-  switch (dateFilter) {
-    case 'last_week': {
-      const dayIndex = (today.getDay() + 6) % 7 // Monday = 0 ... Sunday = 6
-      const thisWeekStart = new Date(today)
-      thisWeekStart.setDate(today.getDate() - dayIndex)
-      const start = new Date(thisWeekStart)
-      start.setDate(thisWeekStart.getDate() - 7)
-      const end = new Date(start)
-      end.setDate(start.getDate() + 6)
-      return [start, end]
-    }
-    case 'ytd':
-      return [new Date(today.getFullYear(), 0, 1), today]
-    case 'last_month':
-      return monthRange(today.getFullYear(), today.getMonth() - 1)
-    case 'last_year':
-      return [new Date(today.getFullYear() - 1, 0, 1), new Date(today.getFullYear() - 1, 11, 31)]
-    case 'mtd':
-    default:
-      return [new Date(today.getFullYear(), today.getMonth(), 1), today]
-  }
-}
+import DateFilter from '../DateFilter'
+import { getDateRange, toISO } from '../dateFilters'
 
 function enumerateDates(start, end) {
   const dates = []
@@ -84,8 +18,6 @@ function enumerateDates(start, end) {
 const OWNER_COLORS = { soroush: '#2a78d6', shiva: '#eb6834' }
 const UNCATEGORIZED_COLOR = '#8a8a86'
 
-const monthOptions = getRecentMonthOptions()
-
 export default function Overview() {
   const [categories] = useCategories()
   const [dateFilter, setDateFilter] = useState('mtd')
@@ -93,6 +25,7 @@ export default function Overview() {
   const [customEnd, setCustomEnd] = useState('')
   const [owner, setOwner] = useState('')
   const [categoryId, setCategoryId] = useState('')
+  const [direction, setDirection] = useState('out')
   const [amountMin, setAmountMin] = useState('')
   const [amountMax, setAmountMax] = useState('')
   const [transactions, setTransactions] = useState([])
@@ -110,6 +43,7 @@ export default function Overview() {
       .list({
         owner,
         category: categoryId,
+        direction,
         date_from: toISO(rangeStart),
         date_to: toISO(rangeEnd),
         amount_min: amountMin,
@@ -117,14 +51,20 @@ export default function Overview() {
       })
       .then(setTransactions)
       .catch((err) => setError(err.message))
-  }, [owner, categoryId, amountMin, amountMax, rangeStart, rangeEnd])
+  }, [owner, categoryId, direction, amountMin, amountMax, rangeStart, rangeEnd])
 
   useEffect(() => {
+    if (!isMonthlyPeriod) {
+      setIncomes([])
+      return
+    }
     api.income
       .list({ owner, date_from: toISO(rangeStart), date_to: toISO(rangeEnd) })
       .then(setIncomes)
       .catch((err) => setError(err.message))
-  }, [owner, rangeStart, rangeEnd])
+  }, [owner, rangeStart, rangeEnd, isMonthlyPeriod])
+
+  const isCashInOnly = direction === 'in'
 
   const categoryById = useMemo(() => Object.fromEntries(categories.map((c) => [c.id, c])), [categories])
 
@@ -133,11 +73,25 @@ export default function Overview() {
     [transactions]
   )
 
+  const totalEarned = useMemo(
+    () => transactions.reduce((sum, t) => (Number(t.amount) < 0 ? sum + Math.abs(Number(t.amount)) : sum), 0),
+    [transactions]
+  )
+
   const perPersonTotals = useMemo(() => {
     const totals = { soroush: 0, shiva: 0 }
     for (const t of transactions) {
       const amt = Number(t.amount)
       if (amt > 0 && t.owner in totals) totals[t.owner] += amt
+    }
+    return totals
+  }, [transactions])
+
+  const earnedByPersonTotals = useMemo(() => {
+    const totals = { soroush: 0, shiva: 0 }
+    for (const t of transactions) {
+      const amt = Number(t.amount)
+      if (amt < 0 && t.owner in totals) totals[t.owner] += Math.abs(amt)
     }
     return totals
   }, [transactions])
@@ -208,46 +162,22 @@ export default function Overview() {
     <div className="stack">
       <h2>Overview</h2>
 
-      <div className="filter-row">
-        <select value={dateFilter} onChange={(e) => setDateFilter(e.target.value)}>
-          <option value="last_week">Last week</option>
-          <option value="mtd">Month to date</option>
-          <option value="ytd">Year to date</option>
-          <option value="last_month">Last month</option>
-          <option value="last_year">Last year</option>
-          <optgroup label="Specific month">
-            {monthOptions.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </optgroup>
-          <option value="custom">Custom range...</option>
-        </select>
-
+      <DateFilter
+        dateFilter={dateFilter}
+        onDateFilterChange={setDateFilter}
+        customStart={customStart}
+        onCustomStartChange={setCustomStart}
+        customEnd={customEnd}
+        onCustomEndChange={setCustomEnd}
+        rangeStart={rangeStart}
+        rangeEnd={rangeEnd}
+      >
         <select value={owner} onChange={(e) => setOwner(e.target.value)}>
           <option value="">Combined</option>
           <option value="soroush">Soroush</option>
           <option value="shiva">Shiva</option>
         </select>
-      </div>
-
-      {dateFilter === 'custom' && (
-        <div className="filter-row">
-          <label>
-            From
-            <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} />
-          </label>
-          <label>
-            To
-            <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} />
-          </label>
-        </div>
-      )}
-
-      <p className="muted small">
-        {toISO(rangeStart)} to {toISO(rangeEnd)}
-      </p>
+      </DateFilter>
 
       <div className="filter-row">
         <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
@@ -258,6 +188,10 @@ export default function Overview() {
               {c.name}
             </option>
           ))}
+        </select>
+        <select value={direction} onChange={(e) => setDirection(e.target.value)}>
+          <option value="out">Cash out</option>
+          <option value="in">Cash in</option>
         </select>
         <input
           type="number"
@@ -277,8 +211,10 @@ export default function Overview() {
 
       <div className="filter-row">
         <div className="card stat-tile" style={{ flex: 1 }}>
-          <div className="muted small">Total spent</div>
-          <div className="stat-number">${totalSpent.toFixed(2)}</div>
+          <div className="muted small">{isCashInOnly ? 'Total earned' : 'Total spent'}</div>
+          <div className={`stat-number ${isCashInOnly ? 'net-positive' : ''}`}>
+            ${(isCashInOnly ? totalEarned : totalSpent).toFixed(2)}
+          </div>
         </div>
         <div className="card stat-tile" style={{ flex: 1 }}>
           <div className="muted small">Transactions</div>
@@ -294,75 +230,69 @@ export default function Overview() {
           <div className="person-stats">
             <div>
               <span className="legend-dot" style={{ background: OWNER_COLORS.soroush }} />
-              Soroush: <strong>${perPersonTotals.soroush.toFixed(2)}</strong>
+              Soroush:{' '}
+              <strong>
+                ${(isCashInOnly ? earnedByPersonTotals.soroush : perPersonTotals.soroush).toFixed(2)}
+              </strong>
             </div>
             <div>
               <span className="legend-dot" style={{ background: OWNER_COLORS.shiva }} />
-              Shiva: <strong>${perPersonTotals.shiva.toFixed(2)}</strong>
+              Shiva:{' '}
+              <strong>${(isCashInOnly ? earnedByPersonTotals.shiva : perPersonTotals.shiva).toFixed(2)}</strong>
             </div>
           </div>
         </div>
       )}
 
-      <div className="card">
-        <div className="muted small" style={{ marginBottom: 8 }}>
-          Spend trend
-        </div>
-        <ResponsiveContainer width="100%" height={180}>
-          <AreaChart data={trend} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-            <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} axisLine={false} tickLine={false} />
-            <YAxis tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} axisLine={false} tickLine={false} width={40} />
-            <Tooltip
-              contentStyle={{ background: 'var(--surface-2)', border: '1px solid var(--border)', fontSize: 12 }}
-              formatter={(value) => [`$${value.toFixed(2)}`, 'Spent']}
-            />
-            <Area type="monotone" dataKey="value" stroke="var(--chart-line)" fill="var(--chart-line)" fillOpacity={0.15} strokeWidth={2} />
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
-
-      <div className="card">
-        <div className="muted small" style={{ marginBottom: 8 }}>
-          By category
-        </div>
-        {breakdown.length === 0 && <p className="muted">No spending in this period.</p>}
-        {breakdown.length > 0 && (
-          <ResponsiveContainer width="100%" height={Math.max(120, breakdown.length * 36)}>
-            <BarChart
-              data={breakdown}
-              layout="vertical"
-              margin={{ top: 0, right: 24, left: 0, bottom: 0 }}
-              barCategoryGap={8}
-            >
-              <XAxis type="number" hide />
-              <YAxis
-                type="category"
-                dataKey="name"
-                width={100}
-                tick={{ fontSize: 12, fill: 'var(--text-primary)' }}
-                axisLine={false}
-                tickLine={false}
-              />
+      {!isCashInOnly && (
+        <div className="card">
+          <div className="muted small" style={{ marginBottom: 8 }}>
+            Spend trend
+          </div>
+          <ResponsiveContainer width="100%" height={180}>
+            <AreaChart data={trend} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+              <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} axisLine={false} tickLine={false} width={40} />
               <Tooltip
                 contentStyle={{ background: 'var(--surface-2)', border: '1px solid var(--border)', fontSize: 12 }}
-                formatter={(value, name, entry) => [
-                  `$${Number(value).toFixed(2)} (${entry.payload.pct.toFixed(0)}%)`,
-                  'Spent',
-                ]}
-                cursor={{ fill: 'var(--surface-3)' }}
+                itemStyle={{ color: 'var(--text-primary)' }}
+                labelStyle={{ color: 'var(--text-secondary)' }}
+                formatter={(value) => [`$${value.toFixed(2)}`, 'Spent']}
               />
-              <Bar dataKey="value" radius={[4, 4, 4, 4]} maxBarSize={20}>
-                {breakdown.map((entry) => (
-                  <Cell key={entry.name} fill={entry.color} />
-                ))}
-              </Bar>
-            </BarChart>
+              <Area type="monotone" dataKey="value" stroke="var(--chart-line)" fill="var(--chart-line)" fillOpacity={0.15} strokeWidth={2} />
+            </AreaChart>
           </ResponsiveContainer>
-        )}
-      </div>
+        </div>
+      )}
 
-      {isMonthlyPeriod && budgetVsActual.length > 0 && (
+      {!isCashInOnly && (
+        <div className="card">
+          <div className="muted small" style={{ marginBottom: 8 }}>
+            By category
+          </div>
+          {breakdown.length === 0 && <p className="muted">No spending in this period.</p>}
+          {breakdown.length > 0 && (
+            <ul className="budget-list">
+              {breakdown.map((entry) => (
+                <li key={entry.name} className="budget-row">
+                  <div className="budget-header">
+                    <span className="budget-name">{entry.name}</span>
+                    <span className="muted">
+                      ${entry.value.toFixed(2)} ({entry.pct.toFixed(0)}%)
+                    </span>
+                  </div>
+                  <div className="meter-track">
+                    <div className="meter-fill" style={{ width: `${entry.pct}%`, background: entry.color }} />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {!isCashInOnly && isMonthlyPeriod && budgetVsActual.length > 0 && (
         <div className="card">
           <div className="muted small" style={{ marginBottom: 8 }}>
             Budget vs actual
@@ -392,39 +322,41 @@ export default function Overview() {
         </div>
       )}
 
-      <div className="card">
-        <div className="muted small" style={{ marginBottom: 8 }}>
-          Income vs spending
-        </div>
-
-        {!owner && (
-          <div className="person-stats" style={{ marginBottom: 10 }}>
-            <div>
-              <span className="legend-dot" style={{ background: OWNER_COLORS.soroush }} />
-              Soroush: <strong>${incomeByPerson.soroush.toFixed(2)}</strong>
-            </div>
-            <div>
-              <span className="legend-dot" style={{ background: OWNER_COLORS.shiva }} />
-              Shiva: <strong>${incomeByPerson.shiva.toFixed(2)}</strong>
-            </div>
+      {!isCashInOnly && isMonthlyPeriod && (
+        <div className="card">
+          <div className="muted small" style={{ marginBottom: 8 }}>
+            Income vs spending
           </div>
-        )}
 
-        <div className="budget-header">
-          <span className="muted">Income</span>
-          <span>${totalIncome.toFixed(2)}</span>
+          {!owner && (
+            <div className="person-stats" style={{ marginBottom: 10 }}>
+              <div>
+                <span className="legend-dot" style={{ background: OWNER_COLORS.soroush }} />
+                Soroush: <strong>${incomeByPerson.soroush.toFixed(2)}</strong>
+              </div>
+              <div>
+                <span className="legend-dot" style={{ background: OWNER_COLORS.shiva }} />
+                Shiva: <strong>${incomeByPerson.shiva.toFixed(2)}</strong>
+              </div>
+            </div>
+          )}
+
+          <div className="budget-header">
+            <span className="muted">Income</span>
+            <span>${totalIncome.toFixed(2)}</span>
+          </div>
+          <div className="budget-header">
+            <span className="muted">Spent</span>
+            <span>${totalSpent.toFixed(2)}</span>
+          </div>
+          <div className="budget-header" style={{ marginTop: 4 }}>
+            <span className="budget-name">Net</span>
+            <span className={net >= 0 ? 'net-positive' : 'over-budget'}>
+              {net >= 0 ? '+' : '-'}${Math.abs(net).toFixed(2)}
+            </span>
+          </div>
         </div>
-        <div className="budget-header">
-          <span className="muted">Spent</span>
-          <span>${totalSpent.toFixed(2)}</span>
-        </div>
-        <div className="budget-header" style={{ marginTop: 4 }}>
-          <span className="budget-name">Net</span>
-          <span className={net >= 0 ? 'net-positive' : 'over-budget'}>
-            {net >= 0 ? '+' : '-'}${Math.abs(net).toFixed(2)}
-          </span>
-        </div>
-      </div>
+      )}
     </div>
   )
 }

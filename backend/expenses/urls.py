@@ -7,6 +7,7 @@ from .views import (
     CardViewSet,
     CategoryViewSet,
     IncomeViewSet,
+    TransactionImportConfirmView,
     TransactionImportView,
     TransactionViewSet,
 )
@@ -24,5 +25,6 @@ urlpatterns = [
     path("auth/me/", MeView.as_view(), name="auth-me"),
     path("budgets/summary/", BudgetsSummaryView.as_view(), name="budgets-summary"),
     path("import/", TransactionImportView.as_view(), name="import"),
+    path("import/confirm/", TransactionImportConfirmView.as_view(), name="import-confirm"),
     path("", include(router.urls)),
 ]

@@ -99,4 +99,5 @@ export const api = {
   },
 
   import: (formData) => request('/api/import/', { method: 'POST', body: formData, isForm: true }),
+  importConfirm: (rows) => request('/api/import/confirm/', { method: 'POST', body: { rows } }),
 }

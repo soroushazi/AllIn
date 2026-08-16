@@ -1,28 +1,51 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import { useCards, useCategories } from '../hooks'
+import DateFilter from '../DateFilter'
+import { getDateRange, toISO } from '../dateFilters'
 
 export default function Transactions() {
   const [categories] = useCategories()
   const [cards] = useCards()
 
+  const [dateFilter, setDateFilter] = useState('mtd')
+  const [customStart, setCustomStart] = useState('')
+  const [customEnd, setCustomEnd] = useState('')
   const [owner, setOwner] = useState('')
   const [cardId, setCardId] = useState('')
   const [categoryId, setCategoryId] = useState('')
+  const [direction, setDirection] = useState('')
+  const [amountMin, setAmountMin] = useState('')
+  const [amountMax, setAmountMax] = useState('')
   const [search, setSearch] = useState('')
 
   const [transactions, setTransactions] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
+  const [rangeStart, rangeEnd] = useMemo(
+    () => getDateRange(dateFilter, customStart, customEnd),
+    [dateFilter, customStart, customEnd]
+  )
+
   const load = useCallback(() => {
     setLoading(true)
     api.transactions
-      .list({ owner, card: cardId, category: categoryId, search })
+      .list({
+        owner,
+        card: cardId,
+        category: categoryId,
+        direction,
+        search,
+        date_from: toISO(rangeStart),
+        date_to: toISO(rangeEnd),
+        amount_min: amountMin,
+        amount_max: amountMax,
+      })
       .then(setTransactions)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false))
-  }, [owner, cardId, categoryId, search])
+  }, [owner, cardId, categoryId, direction, search, amountMin, amountMax, rangeStart, rangeEnd])
 
   useEffect(() => {
     load()
@@ -56,13 +79,24 @@ export default function Transactions() {
     <div className="stack">
       <h2>Transactions</h2>
 
-      <div className="filter-row">
+      <DateFilter
+        dateFilter={dateFilter}
+        onDateFilterChange={setDateFilter}
+        customStart={customStart}
+        onCustomStartChange={setCustomStart}
+        customEnd={customEnd}
+        onCustomEndChange={setCustomEnd}
+        rangeStart={rangeStart}
+        rangeEnd={rangeEnd}
+      >
         <select value={owner} onChange={(e) => setOwner(e.target.value)}>
           <option value="">Everyone</option>
           <option value="soroush">Soroush</option>
           <option value="shiva">Shiva</option>
         </select>
+      </DateFilter>
 
+      <div className="filter-row">
         <select value={cardId} onChange={(e) => setCardId(e.target.value)}>
           <option value="">All cards</option>
           {cards.map((c) => (
@@ -82,11 +116,31 @@ export default function Transactions() {
           ))}
         </select>
 
+        <select value={direction} onChange={(e) => setDirection(e.target.value)}>
+          <option value="">Cash in & out</option>
+          <option value="out">Cash out</option>
+          <option value="in">Cash in</option>
+        </select>
+      </div>
+
+      <div className="filter-row">
         <input
           type="search"
           placeholder="Search description..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+        />
+        <input
+          type="number"
+          placeholder="Min $"
+          value={amountMin}
+          onChange={(e) => setAmountMin(e.target.value)}
+        />
+        <input
+          type="number"
+          placeholder="Max $"
+          value={amountMax}
+          onChange={(e) => setAmountMax(e.target.value)}
         />
       </div>
 

@@ -88,8 +88,17 @@ class ColumnMapping(models.Model):
     credit_column = models.CharField(max_length=100, null=True, blank=True)
 
     # Optional - the export's own category column (e.g. Amex/Discover both
-    # call it "Category"), carried through to Transaction.imported_category as-is.
+    # call it "Category"), used to label the transaction's category as-is.
     category_column = models.CharField(max_length=100, null=True, blank=True)
+
+    # Optional - some issuers (e.g. UHFCU) export debit and credit
+    # transactions in one file for a person with both, distinguished by
+    # their own "Type" column. When set, each row's parsed type is matched
+    # against this mapping's own card.type or alt_card.type to decide which
+    # of the owner's two cards the row actually belongs to; rows matching
+    # neither are skipped and reported for review rather than misfiled.
+    type_column = models.CharField(max_length=100, null=True, blank=True)
+    alt_card = models.ForeignKey(Card, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
 
     flip_sign = models.BooleanField(
         default=False, help_text="Flip the sign of parsed amounts (e.g. bank exports spend as positive)"

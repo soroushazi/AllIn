@@ -1,12 +1,12 @@
 import io
 import re
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
 import pandas as pd
 from django.utils import timezone
 
-from .models import Category, ColumnMapping, MerchantRule, Transaction
+from .models import Card, Category, ColumnMapping, Income, MerchantRule, Transaction
 
 
 def extract_merchant_keyword(description):
@@ -45,12 +45,58 @@ PAYMENT_KEYWORDS = [
     "amex epayment",
     "american express eft",
     "credit card payment",
+    # SoFi's own export shows Amex/Discover payoffs tersely, without any of
+    # the "payment"/"epayment" wording above.
+    "discover",
 ]
 
 
 def is_payment_description(description):
     description_lower = description.lower()
     return any(keyword in description_lower for keyword in PAYMENT_KEYWORDS)
+
+
+# Soroush and Shiva both have UHFCU debit cards and move money between each
+# other's accounts that way - it's a transfer between our own accounts, not
+# spending (or income), so like credit-card payments it's excluded from the
+# ledger entirely rather than imported. Matched as a case-insensitive
+# substring; tune this list once we see wording from other issuers/scenarios.
+TRANSFER_KEYWORDS = [
+    "online banking withdrawal transfer",
+    "online banking deposit transfer",
+    # Soroush's SoFi debit card, seen from the UHFCU side - money moving
+    # to/from it is also his own, not spending. Deliberately narrower than a
+    # bare "sofi bank" substring: SoFi's *own* export also has "SoFi Bank PL"
+    # for personal loan payments, which is real spending and must NOT match
+    # here (it's categorized via a MerchantRule instead - see below).
+    "ach withdrawal sofi bank",
+    "ach deposit sofi bank",
+    # UHFCU's legal name, seen from the SoFi side - same idea, reverse
+    # direction.
+    "university of hawaii fcu",
+]
+
+
+def is_transfer_description(description):
+    description_lower = description.lower()
+    return any(keyword in description_lower for keyword in TRANSFER_KEYWORDS)
+
+
+# Recurring deposits that are actually income, not a one-off transaction -
+# excluded from the ledger the same way payments/transfers are, but logged
+# to Income instead of just discarded. Matched as a case-insensitive
+# substring; each entry is (keyword, income source label).
+INCOME_KEYWORDS = [
+    ("wsb llc", "Paycheck (WSB LLC)"),
+]
+
+
+def match_income_description(description):
+    description_lower = description.lower()
+    for keyword, source in INCOME_KEYWORDS:
+        if keyword in description_lower:
+            return source
+    return None
 
 
 def categorize_by_merchant(description):
@@ -86,6 +132,16 @@ def get_or_create_category_from_label(label):
     return Category.objects.create(name=label, color=AUTO_CATEGORY_COLOR)
 
 
+def find_category_by_label(label):
+    """Same lookup as get_or_create_category_from_label, but never creates -
+    used while building an import preview, so nothing touches the database
+    until the user actually approves the batch."""
+    label = label.strip()
+    if not label:
+        return None
+    return Category.objects.filter(name__iexact=label).first()
+
+
 def get_period_range(period):
     """Return (start_date, end_date) for the current week (Mon-Sun) or calendar month."""
     today = timezone.localdate()
@@ -109,7 +165,8 @@ COLUMN_HINTS = {
     "amount_column": ["amount", "transaction amount"],
     "debit_column": ["debit", "withdrawal", "amount debit", "debit amount"],
     "credit_column": ["credit", "deposit", "amount credit", "credit amount"],
-    "category_column": ["category", "type"],
+    "category_column": ["category"],
+    "type_column": ["type", "transaction type", "trans type"],
 }
 
 
@@ -227,6 +284,16 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
 
     if mapping_override:
         column_mapping, _ = ColumnMapping.objects.update_or_create(card=card, defaults=mapping_override)
+        if column_mapping.alt_card_id:
+            # Mirror this mapping onto the alt card too, pointing back at this
+            # one - so picking *either* of the owner's two cards next time
+            # (not just whichever one was used to set this up) reuses the
+            # same mapping and auto-splits the same way. Same file, same
+            # columns, same header row either way.
+            mirrored_defaults = {**mapping_override, "alt_card_id": card.id}
+            ColumnMapping.objects.update_or_create(card_id=column_mapping.alt_card_id, defaults=mirrored_defaults)
+            if column_mapping.alt_card.header_row != card.header_row:
+                Card.objects.filter(pk=column_mapping.alt_card_id).update(header_row=card.header_row)
     elif column_mapping is None or force_remap:
         suggested_mapping = guess_column_mapping(df.columns)
         if column_mapping is not None:
@@ -239,6 +306,8 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
                 "debit_column": column_mapping.debit_column,
                 "credit_column": column_mapping.credit_column,
                 "category_column": column_mapping.category_column,
+                "type_column": column_mapping.type_column,
+                "alt_card": column_mapping.alt_card_id,
                 "flip_sign": column_mapping.flip_sign,
             }
         return {
@@ -254,12 +323,17 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
         "debit_column": column_mapping.debit_column,
         "credit_column": column_mapping.credit_column,
         "category_column": column_mapping.category_column,
+        "type_column": column_mapping.type_column,
         "flip_sign": column_mapping.flip_sign,
     }
+    alt_card = column_mapping.alt_card
 
     parsed_rows = []
+    income_rows = []
     skipped_unparseable = 0
     skipped_payments = []
+    skipped_transfers = []
+    type_mismatches = []
     for _, row in df.iterrows():
         date = parse_date(row.get(mapping["date_column"]))
         description_raw = row.get(mapping["description_column"])
@@ -278,19 +352,58 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
             skipped_payments.append({"date": str(date), "description": description, "amount": str(amount)})
             continue
 
+        if is_transfer_description(description):
+            skipped_transfers.append({"date": str(date), "description": description, "amount": str(amount)})
+            continue
+
+        income_source = match_income_description(description)
+        if income_source is not None:
+            income_rows.append(
+                {"date": date, "description": description, "amount": abs(amount), "source": income_source}
+            )
+            continue
+
+        # Some issuers (e.g. UHFCU) export debit and credit transactions for
+        # a person in one file, distinguished by their own "Type" column.
+        # Route each row to whichever of the owner's two cards it actually
+        # belongs to; anything matching neither is skipped and reported
+        # rather than misfiled under the wrong card. Only applies when an
+        # alt_card is actually configured - otherwise a mapped type_column
+        # is just some other activity label (e.g. SoFi's "Type" is
+        # Zelle/Direct_deposit/etc., not a debit/credit split), and filtering
+        # rows against `card.type` with nothing to route mismatches to would
+        # silently skip everything instead of importing it.
+        destination_card = card
+        if mapping.get("type_column") and alt_card is not None:
+            type_raw = row.get(mapping["type_column"])
+            if type_raw is not None and not pd.isna(type_raw):
+                row_type = str(type_raw).strip().lower()
+                if row_type == card.type:
+                    destination_card = card
+                elif alt_card is not None and row_type == alt_card.type:
+                    destination_card = alt_card
+                else:
+                    type_mismatches.append(
+                        {"date": str(date), "description": description, "amount": str(amount), "type": type_raw}
+                    )
+                    continue
+
         category_label = None
         if mapping.get("category_column"):
             category_raw = row.get(mapping["category_column"])
             if category_raw is not None and not pd.isna(category_raw):
                 category_label = str(category_raw).strip() or None
 
-        dedupe_key = Transaction.compute_dedupe_key(card.owner_id, card.id, date, description, amount)
+        dedupe_key = Transaction.compute_dedupe_key(
+            destination_card.owner_id, destination_card.id, date, description, amount
+        )
         parsed_rows.append(
             {
                 "date": date,
                 "description": description,
                 "amount": amount,
                 "category_label": category_label,
+                "card": destination_card,
                 "dedupe_key": dedupe_key,
             }
         )
@@ -300,16 +413,21 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
         for t in Transaction.objects.filter(dedupe_key__in=[r["dedupe_key"] for r in parsed_rows])
     }
 
-    new_transactions = []
+    # New rows are NOT written to the ledger here - they're returned as a
+    # reviewable batch (see commit_import_rows) so the user can edit the
+    # description/category and approve before anything is added. Duplicates
+    # of already-imported rows are a different story: they're not new
+    # spending, so backfilling a category onto one that's missing it (from a
+    # freshly-learned MerchantRule or a newly-mapped category column) happens
+    # immediately - low-risk, since it only ever fills a gap, never creates
+    # or changes an actual transaction.
+    pending_transactions = []
     to_backfill = []
     duplicates = 0
     for r in parsed_rows:
         existing = existing_transactions.get(r["dedupe_key"])
         if existing:
             duplicates += 1
-            # A category column mapped (or a merchant rule learned) after this
-            # row was already imported - fill in what was missing without
-            # touching anything already categorized.
             if existing.category_id is None:
                 resolved = categorize_by_merchant(r["description"])
                 if resolved is None and r["category_label"]:
@@ -319,14 +437,107 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
                     to_backfill.append(existing)
             continue
         category = categorize_by_merchant(r["description"])
+        category_label_for_row = None
         if category is None and r["category_label"]:
+            category = find_category_by_label(r["category_label"])
+            if category is None:
+                category_label_for_row = r["category_label"]
+        pending_transactions.append(
+            {
+                "key": r["dedupe_key"],
+                "date": str(r["date"]),
+                "original_description": r["description"],
+                "description": r["description"],
+                "amount": str(r["amount"]),
+                "card_id": r["card"].id,
+                "card_name": r["card"].name,
+                "category_id": category.id if category else None,
+                "category_name": category.name if category else None,
+                "category_label": category_label_for_row,
+            }
+        )
+
+    if to_backfill:
+        Transaction.objects.bulk_update(to_backfill, ["category"])
+
+    # Income has no dedupe_key like Transaction does - dedupe by
+    # (owner, date, amount) so re-uploading the same file doesn't double-log
+    # the same paycheck. Income isn't category-based, so - unlike
+    # transactions - it still commits immediately; there's nothing here for
+    # the user to review.
+    existing_income_keys = set(
+        Income.objects.filter(owner=card.owner, date__in=[r["date"] for r in income_rows]).values_list(
+            "date", "amount"
+        )
+    )
+    new_incomes = []
+    added_income = []
+    for r in income_rows:
+        if (r["date"], r["amount"]) in existing_income_keys:
+            continue
+        new_incomes.append(Income(owner=card.owner, date=r["date"], amount=r["amount"], source=r["source"]))
+        added_income.append({"date": str(r["date"]), "description": r["description"], "amount": str(r["amount"])})
+    Income.objects.bulk_create(new_incomes)
+
+    return {
+        "mapping_required": False,
+        "pending_transactions": pending_transactions,
+        "duplicates_skipped": duplicates,
+        "unparseable_rows_skipped": skipped_unparseable,
+        "payments_excluded": skipped_payments,
+        "transfers_excluded": skipped_transfers,
+        "type_mismatches": type_mismatches,
+        "income_added": added_income,
+        "backfilled_categories": len(to_backfill),
+    }
+
+
+def commit_import_rows(rows):
+    """Create real Transactions from a reviewed/edited pending_transactions
+    batch (see import_transactions). Re-checks for duplicates at commit time
+    (e.g. two review sessions overlapping) rather than trusting the preview
+    is still current. The dedupe key is always computed from
+    original_description (never the user's edited display description), so
+    a cosmetic rename during review doesn't break dedup on future imports of
+    the same recurring transaction.
+    """
+    cards_by_id = {c.id: c for c in Card.objects.filter(pk__in={int(r["card_id"]) for r in rows})}
+    categories_by_id = {c.id: c for c in Category.objects.filter(pk__in={int(r["category_id"]) for r in rows if r.get("category_id")})}
+
+    prepared = []
+    for r in rows:
+        card = cards_by_id[int(r["card_id"])]
+        row_date = date.fromisoformat(r["date"])
+        amount = Decimal(str(r["amount"]))
+        dedupe_key = Transaction.compute_dedupe_key(
+            card.owner_id, card.id, row_date, r["original_description"], amount
+        )
+        prepared.append({**r, "card": card, "date": row_date, "amount": amount, "dedupe_key": dedupe_key})
+
+    existing_keys = set(
+        Transaction.objects.filter(dedupe_key__in=[r["dedupe_key"] for r in prepared]).values_list(
+            "dedupe_key", flat=True
+        )
+    )
+
+    new_transactions = []
+    duplicates = 0
+    for r in prepared:
+        if r["dedupe_key"] in existing_keys:
+            duplicates += 1
+            continue
+        category = None
+        if r.get("category_id"):
+            category = categories_by_id.get(int(r["category_id"]))
+        elif r.get("category_label"):
             category = get_or_create_category_from_label(r["category_label"])
+        description = str(r["description"]).strip() or r["original_description"]
         new_transactions.append(
             Transaction(
-                owner=card.owner,
-                card=card,
+                owner=r["card"].owner,
+                card=r["card"],
                 date=r["date"],
-                description=r["description"],
+                description=description,
                 amount=r["amount"],
                 category=category,
                 source=Transaction.Source.IMPORT,
@@ -335,15 +546,9 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
         )
 
     Transaction.objects.bulk_create(new_transactions)
-    if to_backfill:
-        Transaction.objects.bulk_update(to_backfill, ["category"])
 
     return {
-        "mapping_required": False,
         "imported": len(new_transactions),
         "duplicates_skipped": duplicates,
-        "unparseable_rows_skipped": skipped_unparseable,
-        "payments_excluded": skipped_payments,
-        "backfilled_categories": len(to_backfill),
         "uncategorized": sum(1 for t in new_transactions if t.category_id is None),
     }

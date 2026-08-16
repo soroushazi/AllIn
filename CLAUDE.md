@@ -71,17 +71,29 @@ Why these choices, so they don't get re-litigated:
   nullable = uncategorized - but import only leaves it null when there's truly
   no signal; see below), source ("import" or "voice"), dedupe_key. Import
   resolves `category` as: an existing MerchantRule match first, else - if the
-  card's mapping has a category_column - the export's own category label
-  as-is (get-or-create by exact name, case-insensitive), else null. So an
-  export with its own category column effectively never leaves a transaction
-  uncategorized; it's just not necessarily one of *our* curated categories
-  yet. Manually recategorizing one (Transactions screen) both fixes it and
-  teaches a MerchantRule, so future imports of the same merchant go straight
-  to the real category and skip the placeholder entirely.
+  card's mapping has a category_column - the export's own category label as a
+  suggestion. New (non-duplicate) rows are never written straight to the
+  ledger with that suggestion, though: they're held as an in-memory,
+  unpersisted preview (`pending_transactions`) for the user to review/edit
+  (description and category, per-row) and explicitly approve via
+  `POST /api/import/confirm/` before anything is created - see the
+  2026-08-16 "Import: review-before-commit" status note below. Only at that
+  approval step does an accepted bank label actually get-or-created as a real
+  Category (case-insensitive exact match). Manually recategorizing a
+  transaction later (Transactions screen) both fixes it and teaches a
+  MerchantRule, so future imports of the same merchant pre-fill the real
+  category during review and skip needing a bank-label suggestion entirely.
 - **ColumnMapping** — per (owner, card): which spreadsheet columns map to date/
   description/amount, debit/credit split, or the export's own category column
   (optional), plus a sign-flip flag. Learned once per card (via the Import
   screen's first-upload flow), reused on every future upload for that card.
+  Also optionally: `type_column` + `alt_card` (FK, same owner only) - for
+  issuers that export one person's debit *and* credit transactions in a
+  single file distinguished by their own type column (e.g. UHFCU). Each
+  row's parsed type is matched against this mapping's own `card.type` or
+  `alt_card.type` to decide which of the owner's two cards it actually
+  belongs to; unmatched rows are skipped and returned for review rather
+  than misfiled.
 - **MerchantRule** — merchant keyword → category. Learned automatically whenever
   a user categorizes a transaction; applied to future imports/voice entries so
   recurring merchants stop needing manual tagging.
@@ -96,9 +108,11 @@ Why these choices, so they don't get re-litigated:
 
 ## Key principles
 
-1. **Draft-before-commit for anything LLM/voice-parsed.** Parsed transactions from
-   voice input are always shown as an editable draft requiring explicit confirmation
-   before they hit the real ledger. Never silently auto-commit parsed data.
+1. **Draft-before-commit for anything LLM/voice-parsed, or bank-label-categorized.**
+   Parsed transactions from voice input, and newly-imported transactions whose
+   category comes from a bank's own export label, are always shown as an
+   editable draft requiring explicit confirmation before they hit the real
+   ledger. Never silently auto-commit parsed data or bank-supplied categories.
 2. **Dedup on import.** Re-uploading a file with overlapping dates must not create
    duplicate transactions. Use a dedupe key of (owner, card, date, description,
    amount).
@@ -600,11 +614,536 @@ temporary budget value) cleaned up afterward; real data (8 cards, 26
 categories, 19 transactions, 0 income entries) confirmed unaffected. `npm run
 build`/`npm run lint` and `python manage.py check` both clean.
 
+#### Overview polish — 2026-08-15, same day, right after real use
+
+Three fixes from the user actually using the page:
+1. **"Income vs spending" now gated behind `isMonthlyPeriod`** (same
+   condition as budget-vs-actual) - showing income/net against an arbitrary
+   range like Last week is misleading if payday didn't fall in that window.
+   The income `useEffect` itself now skips the fetch entirely (not just the
+   render) when the period isn't monthly.
+2. **"By category" rebuilt from a Recharts vertical `BarChart` into a plain
+   list**, reusing the exact `budget-list`/`budget-row`/`budget-header`/
+   `meter-track`/`meter-fill` markup as Budgets.jsx and the new
+   budget-vs-actual card. Root cause of the reported overlap: Recharts'
+   `YAxis` category-label auto-wrap has no real control over line height, so
+   long real category names (e.g. "Merchandise & Supplies-Groceries",
+   "Transportation-Tolls & Fees") wrapped to 2-3 lines and collided with
+   neighboring rows at the old `height={breakdown.length * 36}` sizing. A
+   plain list sidesteps the problem entirely (each row is its own flex
+   block, wraps however it needs to) and, as a side effect, fixes a second
+   complaint for free: percentages are now always visible as text instead of
+   only on hover - meaningful since hover doesn't exist on a phone, the
+   PWA's primary use case.
+3. **Recharts `Tooltip` dark-mode text-color bug, fixed on the remaining
+   chart** (spend trend): `contentStyle` set the tooltip's background/border
+   but never its text color, so Recharts' hardcoded-dark default text
+   rendered black-on-dark-surface in dark mode - unreadable, exactly what
+   the user reported for the (now-removed) category chart's tooltip. Added
+   explicit `itemStyle`/`labelStyle` with `var(--text-primary)`/
+   `var(--text-secondary)`. Worth remembering for any *future* Recharts
+   `Tooltip` added anywhere in this app: always set `itemStyle`/`labelStyle`
+   explicitly, `contentStyle` alone isn't enough for dark mode.
+Unused `Bar`/`BarChart`/`Cell` imports removed from Overview.jsx after the
+rewrite. Verified via headless Playwright: Income vs spending confirmed
+visible on MTD and gone on Last week; category list screenshotted and
+visually confirmed no overlap even with the longest real category names;
+dark-mode trend-chart tooltip screenshotted mid-hover and confirmed legible
+("08-09" / "Spent : $178.54" both clearly visible). `npm run build`/`npm run
+lint` clean. Real data (8 cards, 26 categories - now with real budgets set
+on several: Groceries $1000, Eating Out $500, Entertainment $200, House
+$500 - 19 transactions) confirmed unaffected throughout.
+
+#### UHFCU import: one-file debit+credit auto-split — 2026-08-15, next
+
+User moved on to a third issuer, UHFCU - Soroush has both a debit and credit
+card there, Shiva only a debit card, but critically **the export is the same
+file for either case**: one Excel export per person containing every UHFCU
+transaction, distinguished only by the export's own "Type" column
+("Debit"/"Credit", matched case-insensitively). Header row is 1 (no
+preamble, unlike Amex/Discover). User also flagged that inter-spouse
+transfers show up as "Withdrawal Transfer"/"Deposit Transfer" in the
+Description column - clarified via careful re-reading (not a clarifying
+question, the phrasing worked out on close reading) that this was purely
+"map the Description column, don't get confused into picking some other
+detail field" guidance, **not** a request to exclude transfers the way
+credit-card payments are excluded - so transfers import as ordinary
+transactions, no `PAYMENT_KEYWORDS`-style filtering added for them. If the
+user does want that later, it's a small, well-precedented addition.
+
+Did ask one clarifying question on the real design fork here: auto-split one
+upload across both cards vs. upload the same file twice (once per card,
+each time keeping only its own type). **User chose auto-split.** Built as
+`ColumnMapping.type_column` + `ColumnMapping.alt_card` (see Data model
+above) - migration `0007_columnmapping_alt_card_columnmapping_type_column`.
+`import_transactions()` resolves each row's destination card before
+computing its dedupe key (dedupe key includes card id, so this has to
+happen first); `TransactionImportView` validates `alt_card` belongs to the
+same owner as the primary card (400 if not) before saving the mapping.
+Result now includes `type_mismatches` (same shape/treatment as
+`payments_excluded` - a reviewable list, not just a count), for rows whose
+type matched neither card - meant to be rare/exceptional in the auto-split
+design (unlike the "upload twice" alternative, where skips are the expected
+common case).
+
+Also fixed a **latent bug this surfaced**: `category_column`'s auto-detect
+hints included `"type"` (leftover from before `type_column` existed as its
+own concept), which would have mis-guessed UHFCU's Type column as the
+category column. Removed from `category_column`'s hints, added properly to
+`type_column`'s.
+
+Frontend (`Import.jsx`, `ImportStatement`): "Type column" and "Alternate
+card" added to the mapping form's existing "More information" disclosure,
+next to Category column. Alternate card options are computed client-side
+(`cards.filter(c => c.owner === selectedCard.owner && c.id !== selectedCard.id)`)
+so the dropdown only ever offers the same person's other cards. Result
+screen gained a "Review skipped rows" disclosure mirroring the payment one.
+
+Verified end-to-end over real HTTP with a synthetic UHFCU-shaped file
+(Amount/Date/Description/Type columns, header row 1, 3 Debit + 2 Credit rows
+including a "Withdrawal Transfer" row) against two throwaway sibling cards:
+one upload split correctly (3 rows landed on the debit card, 2 on the
+credit card, `type_mismatches: []`); the transfer row imported as an
+ordinary transaction using the Description column, confirming the
+no-exclusion decision; a second file with an unrecognized type value
+("Savings") correctly produced `imported: 0` + a populated
+`type_mismatches` list rather than being misfiled; attempting an `alt_card`
+from a different owner correctly got a 400. Also verified in the browser via
+headless Playwright that the "Alternate card" dropdown is properly
+owner-scoped (only Soroush's cards appeared, no Shiva cards) - screenshot
+reviewed. `npm run build`/`npm run lint` and `python manage.py check` both
+clean. All test cards/mappings/transactions cleaned up afterward; real data
+(8 cards, 26 categories, 19 transactions) confirmed unaffected - deliberately
+did **not** touch the real UHFCU Debit card's already-saved mapping during
+verification, to avoid needing the user to redo it.
+**Not yet done:** the user hasn't actually run this against their real UHFCU
+export yet - next real-world test.
+
+#### Inter-spouse transfer exclusion — 2026-08-15, right after
+
+Immediate follow-up: the user confirmed they *do* want "Online banking
+Withdrawal Transfer"/"Online banking Deposit Transfer" excluded from the
+ledger, same treatment as credit-card payments. Added as its own thing
+rather than folding into `PAYMENT_KEYWORDS` - `TRANSFER_KEYWORDS` +
+`is_transfer_description()` in `services.py`, checked right after the
+payment check in the row loop, own result field `transfers_excluded` (same
+`{date, description, amount}` shape as `payments_excluded`, same
+never-imported treatment). Kept separate from payments deliberately: a
+credit-card payment and an inter-spouse transfer are different real-world
+things even though both are "not spending," and separate keyword lists /
+result fields / review sections mean the user can tell which is which and
+tune either independently later. `Import.jsx` result screen got a matching
+count line + "Review excluded transfer rows" disclosure. Verified end-to-end
+over real HTTP with a synthetic file (2 real purchases + both transfer
+wordings, mixed case to confirm case-insensitive matching): only the 2 real
+purchases imported, both transfers correctly excluded and listed in
+`transfers_excluded`. Cleaned up afterward; real data unaffected. `npm run
+build`/`npm run lint` and `python manage.py check` clean.
+
+#### UHFCU: symmetric mapping + sign/case confirmation — 2026-08-15, right after
+
+User tried the auto-split feature and flagged three things:
+1. **Picking either UHFCU card should behave identically** - "I do not want
+   to upload it twice." Root cause: the auto-split design from the prior
+   round only configured the *primary* card (whichever was used to first
+   set it up) with `alt_card` pointing at its sibling - the sibling itself
+   had no `ColumnMapping` at all, so selecting it later would trigger the
+   full first-time mapping flow again, and even after that, rows wouldn't
+   route correctly unless the user separately set `alt_card` right back
+   on that side too. **Fixed**: whenever a mapping with `alt_card` set is
+   saved, `import_transactions()` now also mirrors it onto the alt card -
+   same columns/type_column/flip_sign, `alt_card` pointing back at the
+   original, `header_row` synced too (same file either way, so it must
+   match). One setup step now configures both cards; picking either one
+   from then on reuses the mapping and auto-splits identically. Verified by
+   establishing the mapping via the debit card, confirming the mirrored
+   mapping appeared on the credit card automatically, then re-uploading the
+   *same* file selecting the credit card as entry point with **zero**
+   mapping params - went straight to import (no re-prompt) and all 4 real
+   rows correctly deduped against what the first upload had already filed
+   under both cards.
+2. **UHFCU's sign convention is inverted vs. Amex/Discover** - positive
+   means money added (deposit/credit), negative means money out (spending).
+   Turned out this needed **no new code** - the existing `flip_sign`
+   checkbox ("check this if your export shows spending as negative") was
+   built for exactly this case. Confirmed by testing: a -$45.20 spend
+   becomes +$45.20 after flip (correctly counted as spending), a +$500
+   deposit becomes -$500 (correctly *not* counted as spending). The user
+   needs to check "Flip sign" when first mapping either UHFCU card (it's
+   part of what gets mirrored/remembered, so only once).
+3. **Type column values are "DEBIT"/"CREDIT" (all-caps)** - also needed
+   **no code change**: the type-matching logic already lowercases both the
+   row's value and `card.type` before comparing, so any casing works.
+   Confirmed by testing with all-caps values in the same file as above -
+   routed correctly.
+Real UHFCU cards' mappings were *not* touched during any of this testing
+(all done against throwaway cards) - the user's own first real setup step
+(map either UHFCU card once, with Flip sign checked) still needs to happen.
+`python manage.py check` clean; no frontend changes this round (the UI
+already exposed everything needed - `alt_card`, `type_column`, `flip_sign`
+were all already there from the prior round).
+
+#### First real UHFCU import + auto-income — 2026-08-15, right after
+
+User ran a real import against their real UHFCU Credit card and shared the
+result log verbatim. Diagnosed three things from it, one of them a live bug
+affecting already-imported real data:
+
+1. **`flip_sign` was never turned on for the real UHFCU Credit mapping** -
+   confirmed by inspecting the ORM directly (`flip_sign=False`,
+   `alt_card=None`). All 8 already-imported transactions turned out to be
+   deposits (`ACH Deposit ...`) stored with their *raw* positive sign, which
+   the app reads as spending - i.e. real deposits were silently being
+   counted as spending in Overview's totals. Root-caused via the ORM, not
+   guessed - printed the 8 rows directly.
+2. Of the 3 `type_mismatches` in the log, the user confirmed one
+   ("ACH Withdrawal SoFi Bank") *should* be excluded (his own SoFi account,
+   same idea as the UHFCU-to-UHFCU P2P transfers), and the other two
+   ("ARDENT CU", "Amazon web services") should have imported - they didn't
+   because `alt_card` was never set on the real mapping, so any `DEBIT`-typed
+   row had nowhere to go.
+3. New ask: auto-detect "ACH Deposit WSB LLC" (Soroush's employer) as
+   income instead of a transaction.
+
+**Code changes** (`services.py`): added `"sofi bank"` to `TRANSFER_KEYWORDS`
+(catches both `ACH Withdrawal SoFi Bank` and `ACH Deposit SoFi Bank` - same
+substring, both directions). Added a parallel mechanism for income:
+`INCOME_KEYWORDS` (list of `(keyword, source_label)` tuples - currently just
+`("wsb llc", "Paycheck (WSB LLC)")`) + `match_income_description()`, checked
+in the row loop right after the transfer check (income rows need no
+type-routing - they never become a Transaction at all). Matched rows are
+excluded from the transaction ledger and instead become an `Income` row
+(`owner=card.owner`, `amount=abs(amount)` - sign-convention-agnostic,
+`source` from the keyword table). **Income has no `dedupe_key` field like
+Transaction**, so added ad-hoc dedup by `(owner, date, amount)` before
+`bulk_create` - re-uploading the same file must not double-log the same
+paycheck. Result dict gained `income_added` (same `{date, description,
+amount}` shape as the other review lists). `Import.jsx` result screen got a
+matching count line + "Review income added" disclosure pointing at the "Log
+income" tab.
+
+**Real data fix** (this was the sensitive part - see reasoning: deleting the
+8 stale rows was necessary, not optional, because fixing the mapping and
+just re-uploading *without* deleting first would have produced duplicates -
+the WSB/SoFi rows would newly resolve to Income/exclusion with the stale
+Transaction copies still sitting there, and the Dividend/Venmo rows would
+get a *second*, differently-signed copy since their dedupe_key changes once
+`flip_sign` flips): directly fixed the real `UHFCU - Credit` `ColumnMapping`
+(`flip_sign=True`, `alt_card=`UHFCU - Debit`) via the ORM, manually mirrored
+the same mapping onto `UHFCU - Debit` (replicating exactly what
+`import_transactions()`'s auto-mirroring does, since this was done outside
+the normal upload flow), then deleted the 8 stale transactions after
+printing and confirming each one first. Real `UHFCU - Debit` had no
+transactions yet, so nothing there needed touching.
+
+Verified the new keyword logic end-to-end over real HTTP against a
+throwaway card before touching real data: a real purchase imported
+normally, a SoFi deposit was correctly excluded as a transfer, both WSB LLC
+rows were correctly logged to Income (`source: "Paycheck (WSB LLC)"`), and
+re-uploading the identical file produced `income_added: []` (correctly
+deduped) while the purchase counted as a duplicate. Also noticed a real,
+pre-existing manual Income entry ($2721.12, source "Paycheck") from the
+user's own earlier use of the Log Income form - left untouched throughout.
+`npm run build`/`npm run lint` and `python manage.py check` clean.
+**Not yet done: the user needs to re-upload their real UHFCU Credit export
+one more time** - this will now correctly (re-)import the real spending with
+correct signs, split the 2 previously-stuck DEBIT-type rows onto UHFCU
+Debit, exclude the SoFi deposit/withdrawal and P2P transfers, and log the
+WSB LLC deposits to Income automatically.
+
+#### SoFi Debit prep + a real trap caught before it happened — 2026-08-15, next
+
+User moved to the last card, SoFi Debit (Soroush's direct-deposit account -
+no sibling SoFi credit card exists). Columns: Date/Amount/Description
+(camelCase-style headers, same as every other issuer so far), header row 1,
+same negative=spend/positive=deposit sign convention as UHFCU (so
+`flip_sign` needed again). Also has a "Type" column (Zelle, Direct_deposit,
+etc.) and the same "WSB LLC" (all-caps) direct-deposit wording as UHFCU.
+
+**Caught a real trap before the user could hit it**, by reasoning through
+the existing type-routing code rather than waiting for a bug report: SoFi's
+"Type" column is an *activity* label, not a debit/credit split - but
+`guess_column_mapping()` auto-suggests any column named "type" as
+`type_column` regardless of context (it has no way to know there's no
+sibling card). Before this fix, mapping it (even by accepting the
+auto-suggestion) with no `alt_card` set would have made *every single row*
+fail the `row_type == card.type` check and get silently skipped - the whole
+statement would import zero transactions, all dumped into
+`type_mismatches`. **Fix**: type-routing now only activates when `alt_card`
+is actually set (`services.py`: `if mapping.get("type_column") and alt_card
+is not None`) - a mapped-but-unpaired `type_column` is simply ignored, rows
+import normally. Updated the "More information" help text in `Import.jsx`
+to say this explicitly (leave both blank for a single-account card).
+Verified with a synthetic SoFi-shaped file (Rent/Zelle/Internet spending +
+a WSB LLC payroll deposit), `type_column` mapped, no `alt_card`: all 3 real
+rows imported correctly with correct signs, zero `type_mismatches`, and the
+$2500 payroll deposit correctly auto-logged to Income via the existing
+(issuer-agnostic) "wsb llc" keyword - no new code needed for that part,
+confirming the UHFCU income-detection work carries over to any card for
+free. No other new keywords added this round (Amex/Discover payoff wording
+on the SoFi side is unconfirmed without the user's real file - existing
+`PAYMENT_KEYWORDS` already covers several plausible phrasings; told the user
+to check the "Review excluded payment rows" list after their real upload and
+report back if anything slips through uncaught, same established workflow
+as every prior issuer). `npm run build`/`npm run lint` and `python
+manage.py check` clean; all test data cleaned up; real data (8 cards, 26
+categories, 23 transactions, 5 income entries) unaffected - the user hasn't
+uploaded a real SoFi file yet.
+
+#### SoFi payment/transfer wording + first MerchantRules seeded directly — 2026-08-15, next
+
+Before uploading a real SoFi file, the user gave six description patterns
+up front. Split cleanly into two mechanisms, both already existing - no new
+concepts, just data:
+
+- **Exclusions** (`services.py`): added bare `"discover"` to
+  `PAYMENT_KEYWORDS` (SoFi shows Discover payoffs tersely, no "payment"
+  wording - `"amex epayment"` already covered the Amex case). Added
+  `"university of hawaii fcu"` to `TRANSFER_KEYWORDS` (UHFCU's legal name,
+  seen from the SoFi side). **Caught a real collision before it caused
+  data loss**: the existing broad `"sofi bank"` transfer keyword (added
+  last round for the UHFCU side) would have also matched "SoFi Bank PL" -
+  SoFi's *own* personal-loan payment wording, which is real spending, not a
+  transfer. Narrowed it to the two exact confirmed phrasings
+  (`"ach withdrawal sofi bank"` / `"ach deposit sofi bank"`) so the loan
+  payment can't collide.
+- **Auto-categorization**: KAISERMAN→Rent, SoFi Bank PL→Loan, VERIZON→House
+  don't need new code at all - `MerchantRule` (keyword → category,
+  case-insensitive substring, checked during import) already does exactly
+  this. Created the three rules directly via the ORM rather than waiting for
+  the user to manually recategorize one transaction of each first (which is
+  the normal way `MerchantRule`s get learned - see "Learn from corrections"
+  in Key principles).
+Verified all six end-to-end over real HTTP with a synthetic file covering
+every pattern: AMEX EPAYMENT and DISCOVER excluded as payments, UNIVERSITY
+OF HAWAII FCU excluded as a transfer, and KAISERMAN/SoFi Bank PL/VERIZON all
+imported with the correct category (1/4/2 → confirmed Rent/Loan/House) -
+critically confirming the SoFi Bank PL row was *not* caught by the
+transfer-keyword narrowing. `python manage.py check` clean; no frontend
+changes this round. All test data cleaned up; real data (8 cards, 26
+categories, 23 transactions, 5 income entries, and now 3 real
+`MerchantRule`s) confirmed unaffected/correctly seeded. User hasn't
+uploaded their real SoFi file yet - next step.
+
+#### Transactions tab gets the same filters as Overview — 2026-08-15, next
+
+Real SoFi upload succeeded in between (confirmed live in the Transactions
+screenshot below - KAISERMAN showing "Rent", Zelle payments, real spending -
+no separate note needed, nothing to fix there). User then asked for
+Transactions to get the same date-range filtering Overview has (Last
+week/MTD/YTD/Last month/Last year/specific month/custom), plus a min/max
+amount filter - owner/card/category/search already existed. "Transactions
+with no category" was already covered by the existing Uncategorized option
+in the category dropdown, so nothing new needed there.
+
+Rather than duplicate Overview's ~80-line date-range engine and its filter
+JSX a second time, extracted both into shared pieces first:
+- **`frontend/src/dateFilters.js`** - `toISO()`, `getRecentMonthOptions()`,
+  `getDateRange()`, unchanged logic, just moved out of `Overview.jsx`.
+- **`frontend/src/DateFilter.jsx`** - the date `<select>` (with the
+  "Specific month" optgroup) + conditional custom-range inputs + resolved
+  "YYYY-MM-DD to YYYY-MM-DD" text, as one component. Takes the date-filter
+  state as controlled props and a `children` slot so the calling page can
+  drop its own owner/combined select into the *same* `.filter-row` (keeps
+  the exact layout both pages already had - date select and owner select
+  side by side).
+`Overview.jsx` now imports both instead of defining them locally - refactor
+only, no behavior change (verified via build). `Transactions.jsx` gained
+`dateFilter`/`customStart`/`customEnd`/`amountMin`/`amountMax` state, the
+same `<DateFilter>` usage, and `amount_min`/`amount_max` added to its
+`api.transactions.list(...)` call (backend support already existed from the
+Overview round). Defaults to Month to Date, matching Overview, since the
+user didn't specify a different default and app-wide consistency seemed
+like the better call than preserving the old "shows everything" behavior.
+
+Verified via headless Playwright: default lands on MTD, switching to Year
+to date pulls in older real transactions (40 rows - confirms the date
+filter isn't accidentally still hardcoded/ignored), the Uncategorized
+category filter narrows correctly (16 of those 40), and Min $100 narrows
+further (9). Screenshot reviewed - real data renders correctly with the new
+filter layout, categories/colors intact. `npm run build`/`npm run lint`
+clean. Real data (8 cards, 26 categories, 40 transactions, 6 income entries)
+confirmed unaffected throughout - transaction/income counts are higher than
+last recorded because the user's real SoFi upload landed in between
+sessions, not from anything done this round.
+
+#### Min/Max amount filter sign bug — 2026-08-15, next
+
+User caught it live: setting Max $10 was also showing large refund/
+income-like transactions (a real example: a -$914.60 Venmo deposit). Root
+cause: `amount_min`/`amount_max` (`TransactionViewSet.get_queryset()` in
+`views.py`) filtered the *raw signed* `amount`, but this app stores
+refunds/deposits/income-like rows as negative (displayed with a green "+" -
+see the UHFCU/SoFi sign-convention work earlier the same day). Any negative
+number trivially satisfies a small `amount <= max`, so a huge deposit
+sailed straight through a "Max $10" filter meant to mean "small
+transactions only". **Fixed** by comparing against the displayed magnitude
+instead: `qs.annotate(abs_amount=Abs("amount"))` (from
+`django.db.models.functions`), then filtering `abs_amount__gte`/`__lte`
+rather than `amount__gte`/`__lte`. One shared fix in the one endpoint both
+Overview and Transactions call - no frontend changes needed. Verified
+directly against real data: Max=10 now correctly excludes the real -$914.60
+deposit (only returning genuinely-small-magnitude rows, including small
+negative ones like -$7.00 and -$0.01, which is correct - their displayed
+magnitude really is small), and Max=1000 correctly includes it again.
+`python manage.py check` clean.
+
+#### "Cash in / Cash out" filter — 2026-08-15, next
+
+User wanted a filter for money-in vs. money-out on both Overview and
+Transactions, explicitly not wanting it called "income"/"spending"/anything
+synonymous with "earned" - asked a quick clarifying question on exact
+wording rather than guessing (worth it: got "Cash in"/"Cash out" back,
+which reads a bit differently than what "Recommended" would have been).
+New `direction` query param on `TransactionViewSet.get_queryset()`
+(`views.py`): `"in"` → `amount__lt=0`, `"out"` → `amount__gt=0`, same sign
+convention as the Min/Max fix earlier the same day (spending stored
+positive, refunds/income-like rows negative). Third `<select>` added to
+both pages' filter rows (Cash in & out / Cash out / Cash in), wired into
+each page's existing `api.transactions.list(...)` call - purely additive,
+composes with every other filter via AND (e.g. "Cash out" + "Max $100" =
+small real purchases only).
+
+Verified end-to-end against real data via headless Playwright: on
+Transactions, "Cash in" returned exactly 9 rows (all rendering with the
+green "+" the app already uses for negative-stored amounts), "Cash out"
+returned exactly 31, and 9 + 31 = 40 = the true unfiltered total (confirmed
+against a correctly-timed baseline read, after the first attempt raced
+ahead of a debounced fetch and gave a stale count - script timing, not an
+app bug). On Overview, filtering to "Cash in" only correctly zeroes out
+"Total spent" (which by design only ever sums `amount > 0`, i.e. cash-out
+rows) - expected behavior, not a bug, since Overview's other cards
+(by-person, trend, by-category, budget-vs-actual) are all spending-scoped
+by the same convention. Screenshot reviewed - also incidentally
+reconfirmed VERIZON→House and SoFi Bank PL→Loan `MerchantRule`s are
+working correctly against the user's real imported data. `npm run
+build`/`npm run lint` and `python manage.py check` clean.
+
+#### Overview adapts to "Cash in" — 2026-08-16, next
+
+User caught it immediately after the Cash in/out filter shipped: every card
+on Overview is spending-scoped by design (Total spent, By person, Spend
+trend, By category, Budget vs actual, Income vs spending all only ever sum
+`amount > 0`), so selecting "Cash in" zeroed out or emptied literally
+everything - not a bug in the filter itself, but the page had nothing
+sensible to show for the opposite case. User's own spec: swap Total
+spent → "Total earned" and By person → earned-per-person, hide everything
+else (Spend trend, By category, Budget vs actual, Income vs spending)
+rather than trying to adapt them too - built exactly that, no more.
+
+`isCashInOnly = direction === 'in'` gates the JSX; two new `useMemo`s
+(`totalEarned`, `earnedByPersonTotals`) mirror the existing spend
+computations but sum `amount < 0` rows via `Math.abs()` instead of `> 0`.
+Total earned reuses the `.net-positive` (green) class for visual
+consistency with how earned/refund amounts are already shown elsewhere.
+Transaction count and the date/owner/category/cash-direction/amount filter
+controls themselves stay visible always - only the spending-shaped content
+cards are conditionally hidden. Budget vs actual and Income vs spending
+already had an `isMonthlyPeriod` gate from earlier the same day; added
+`!isCashInOnly &&` alongside it rather than replacing it.
+
+Verified via headless Playwright against real YTD data: selecting Cash in
+shows exactly three card sections (Total earned/Transactions/By person,
+confirmed via their actual rendered `.muted.small` titles) with none of the
+other four; switching to Cash out restores the full set. Screenshot
+reviewed - Total earned renders in green, matches the requested layout
+exactly. `npm run build`/`npm run lint` clean; real data (8 cards, 26
+categories, 40 transactions, 6 income entries) unaffected throughout.
+
+#### Overview: dropped the combined cash-direction option — 2026-08-16, next
+
+Quick follow-up: on Overview specifically (not Transactions, which keeps
+all three), removed the "Cash in & out" option from the direction filter -
+now just Cash out / Cash in, defaulting to Cash out (`direction` state
+default changed from `''` to `'out'`). Makes sense given the prior round's
+work: Overview's content is either spending-shaped or earned-shaped
+depending on `isCashInOnly`, so there's no coherent "both at once" view to
+default to anyway - every page load now lands on a real, populated state
+instead of the old combined default. Verified via headless Playwright:
+default value is `'out'`, dropdown has exactly two options. `npm run
+build`/`npm run lint` clean.
+
+#### Import: review-before-commit for new transactions — 2026-08-16
+
+User's ask: bank exports carry their own category labels (e.g. "Merchandise-
+Groceries", "Restaurant-Coffee") that don't match our 15 curated categories,
+so every newly-imported transaction should be shown to the user for review
+- editable description and category - with an explicit approve step, instead
+of committing straight to the ledger with whatever label the bank happened
+to use. Goal: no duplicate/near-duplicate categories accumulating from raw
+bank labels.
+
+Implemented as a two-step, **stateless** flow (no new `ImportDraft` model -
+weekly batches are small, and nothing is written to the DB until the user
+approves, so there's nothing meaningful to persist server-side in between):
+
+1. `POST /api/import/` (existing endpoint, `TransactionImportView`) now stops
+   short of `bulk_create` for net-new rows. `import_transactions()` in
+   `services.py` returns a `pending_transactions` list instead - each row has
+   `key` (the would-be dedupe_key), `date`, `original_description`
+   (immutable, drives dedup), `description` (editable), `amount`, `card_id`/
+   `card_name`, and either a resolved `category_id`/`category_name` (already
+   matched via `MerchantRule`) or a `category_label` (the bank's own raw
+   label, offered as a "(new)" suggestion, not yet created as a real
+   `Category` row). Added `find_category_by_label()` - a pure lookup,
+   deliberately separate from the pre-existing `get_or_create_category_from_
+   label()` - so *nothing* gets created during preview even if the batch is
+   later discarded. Duplicate rows (already in the ledger) and auto-detected
+   income still commit immediately as before - review only applies to
+   genuinely new spending rows, since those are the only ones with a real
+   category ambiguity.
+2. `POST /api/import/confirm/` (new endpoint, `TransactionImportConfirmView`
+   → `commit_import_rows()`) takes the reviewed/edited rows back and does the
+   actual `bulk_create`. Re-checks dedupe at commit time rather than trusting
+   the preview is still current. Critically, the dedupe_key is always
+   computed from `original_description`, never the user's edited
+   `description` - so renaming "WALMART SUPERCENTER" to "Walmart - weekly
+   groceries" during review doesn't break dedup the next time that same
+   merchant string shows up in a real export.
+
+Frontend (`Import.jsx`): after upload, if `pending_transactions` is
+non-empty, shows an inline review list (one card per row - text input for
+description, `<select>` for category, pre-selected to the MerchantRule match
+or the bank's "(new)" suggestion) instead of the old immediate result
+screen. "Approve & import N" posts to `/import/confirm/` and merges its
+result with the preview's own `duplicates_skipped` (both counts matter -
+some rows may already have been dupes before review even started; don't let
+one overwrite the other). Went with this inline-card pattern rather than a
+true modal, matching how the existing mapping-required step already works
+in this same file - simpler and more mobile-friendly than a popup, was a
+judgment call rather than a literal read of "pop-up."
+
+Verified end-to-end with a throwaway `_verify_temp` user/card and a 3-row
+synthetic file via real HTTP (curl) and headless Playwright:
+- Preview correctly matched the pre-existing `kaiserman`→Rent `MerchantRule`
+  (category_id pre-filled) while the other two rows surfaced their bank
+  labels as "(new)" - confirmed via direct DB query that zero Transactions
+  and zero new Categories existed at this point.
+- Edited one row's description and overrode another row's category
+  (declining its "(new)" suggestion in favor of an existing category) before
+  approving; confirmed via ORM that the committed transaction reflected the
+  *edited* description, the override category actually took effect (the
+  declined suggested category was never created), and the accepted "(new)"
+  suggestion *was* created as a real Category.
+- Re-uploaded the identical original file afterward and got exactly 3
+  `duplicates_skipped`, 0 new pending rows - proving dedup keys off
+  `original_description` survived the cosmetic edit from the prior step.
+- Playwright screenshot confirmed the review UI renders correctly (3 cards,
+  editable inputs, correct pre-selected dropdowns) and the "Import complete"
+  result screen renders after approval, with zero console errors throughout.
+- All test data (`_verify_temp` user, `__VERIFY_REVIEW__` card, its 3
+  transactions, the one newly-created placeholder category) deleted
+  afterward; real data confirmed unchanged (8 cards, 26 categories, 40
+  transactions). `npm run build`/`npm run lint` and `python manage.py check`
+  clean throughout.
+
 Key frontend files: `frontend/src/api.js` (API client), `AuthContext.jsx`,
 `App.jsx` + `Layout.jsx` (routing/shell), `AccountMenu.jsx` (account
-dropdown), `icons.jsx` (inline SVG icons), `pages/*.jsx` (the nine screens),
-`index.css` (all styling, light/dark via `prefers-color-scheme`),
-`vite.config.js` (dev server + `/api` proxy).
+dropdown), `icons.jsx` (inline SVG icons), `DateFilter.jsx` +
+`dateFilters.js` (shared date-range filter, used by Overview and
+Transactions), `pages/*.jsx` (the nine screens, incl. the import-review
+step in `Import.jsx`), `index.css` (all styling, light/dark via
+`prefers-color-scheme`), `vite.config.js` (dev server + `/api` proxy).
 Key backend files: `backend/expenses/{models,views,serializers,services,auth,urls}.py`,
 `backend/config/settings.py` (CORS/CSRF/ALLOWED_HOSTS, incl. Codespaces auto-detect).
 
