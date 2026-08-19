@@ -8,17 +8,28 @@ function todayISO() {
 }
 
 // A single, manually-typed transaction - as opposed to a bulk statement
-// upload. Shared between the Import screen's "Add transaction" tab and the
-// form at the top of the Transactions screen.
-export default function AddTransactionForm({ cards, categories, locationSuggestions, tagSuggestions, onAdded }) {
+// upload. Shared between the Import screen's "Add transaction" tab, the form
+// at the top of the Transactions screen, and the Voice screen's
+// confirm-before-commit draft (initialValues/source - see Voice.jsx). The
+// voice draft can't guess which card, so cardId always starts blank
+// regardless of initialValues - the user picks that themselves either way.
+export default function AddTransactionForm({
+  cards,
+  categories,
+  locationSuggestions,
+  tagSuggestions,
+  onAdded,
+  initialValues,
+  source = 'manual',
+}) {
   const [cardId, setCardId] = useState('')
   const [date, setDate] = useState(todayISO())
-  const [description, setDescription] = useState('')
-  const [direction, setDirection] = useState('out')
-  const [amount, setAmount] = useState('')
-  const [categoryId, setCategoryId] = useState('')
+  const [description, setDescription] = useState(initialValues?.description || '')
+  const [direction, setDirection] = useState(initialValues?.direction || 'out')
+  const [amount, setAmount] = useState(initialValues?.amount || '')
+  const [categoryId, setCategoryId] = useState(initialValues?.categoryId || '')
   const [location, setLocation] = useState('')
-  const [notes, setNotes] = useState('')
+  const [notes, setNotes] = useState(initialValues?.notes || '')
   const [tags, setTags] = useState([])
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
@@ -61,6 +72,7 @@ export default function AddTransactionForm({ cards, categories, locationSuggesti
       notes,
       location,
       tags,
+      source,
     }
     setSubmitting(true)
     setError(null)

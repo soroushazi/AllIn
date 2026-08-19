@@ -18,8 +18,6 @@ services:
   backend:
     build: ./backend
     command: python manage.py runserver 0.0.0.0:8000
-    volumes:
-      - ./backend:/app
     ports:
       - "8000:8000"
     environment:
@@ -35,9 +33,22 @@ services:
       CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       CODESPACE_NAME: ${CODESPACE_NAME:-}
       GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN: ${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-}
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-phi3}
+      WHISPER_MODEL: ${WHISPER_MODEL:-base.en}
+    volumes:
+      - ./backend:/app
+      - whisper_cache:/root/.cache/huggingface
     depends_on:
       db:
         condition: service_healthy
 
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_data:/root/.ollama
+
 volumes:
   postgres_data:
+  ollama_data:
+  whisper_cache:

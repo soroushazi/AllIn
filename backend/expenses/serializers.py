@@ -129,10 +129,18 @@ class TransactionCreateSerializer(serializers.ModelSerializer):
 
     owner = serializers.SlugRelatedField(slug_field="username", queryset=User.objects.all())
     tags = serializers.ListField(child=serializers.CharField(), required=False, write_only=True)
+    # Both the Import/Transactions manual-add form and the Voice screen's
+    # confirm-before-commit form post through this same serializer - "voice"
+    # just tags the resulting row so it can be told apart later. Never
+    # "import": bulk statement rows always go through commit_import_rows
+    # instead, not this endpoint.
+    source = serializers.ChoiceField(
+        choices=[Transaction.Source.MANUAL, Transaction.Source.VOICE], required=False, write_only=True
+    )
 
     class Meta:
         model = Transaction
-        fields = ["id", "owner", "card", "date", "description", "amount", "category", "notes", "location", "tags"]
+        fields = ["id", "owner", "card", "date", "description", "amount", "category", "notes", "location", "tags", "source"]
 
     def validate(self, attrs):
         if attrs["card"].owner_id != attrs["owner"].id:
@@ -141,7 +149,7 @@ class TransactionCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         tag_names = validated_data.pop("tags", [])
-        validated_data["source"] = Transaction.Source.MANUAL
+        validated_data["source"] = validated_data.pop("source", None) or Transaction.Source.MANUAL
         dedupe_key = Transaction.compute_dedupe_key(
             validated_data["owner"].id,
             validated_data["card"].id,

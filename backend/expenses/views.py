@@ -38,6 +38,8 @@ from .services import (
     extract_merchant_keyword,
     get_period_range,
     import_transactions,
+    parse_voice_transcript,
+    transcribe_audio,
 )
 
 # Fixed motivational checkpoints on the way to the freedom number - not
@@ -433,6 +435,29 @@ class TransactionImportConfirmView(APIView):
         except (KeyError, ValueError, TypeError) as e:
             return Response({"detail": f"Couldn't commit these rows: {e}"}, status=400)
         return Response(result, status=200)
+
+
+class VoiceCaptureView(APIView):
+    """Tap-and-talk expense logging, phase 1: transcribe the recording
+    (self-hosted Whisper), then ask the self-hosted Ollama model to extract
+    a draft transaction from the transcript. Stateless and never writes to
+    the database - same draft-before-commit precedent as the import review
+    flow (see TransactionImportView) - the frontend shows the result as a
+    prefilled, editable AddTransactionForm and only creates a real
+    Transaction (source="voice") once the user explicitly submits it via the
+    existing POST /api/transactions/.
+    """
+
+    parser_classes = [MultiPartParser]
+
+    def post(self, request):
+        audio_file = request.FILES.get("audio")
+        if not audio_file:
+            return Response({"detail": "audio is required"}, status=400)
+
+        transcript = transcribe_audio(audio_file)
+        draft = parse_voice_transcript(transcript)
+        return Response(draft)
 
 
 class BudgetsSummaryView(APIView):

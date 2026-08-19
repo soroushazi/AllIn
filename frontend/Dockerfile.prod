@@ -1,0 +1,15 @@
+# One-shot builder: compiles the Vite production bundle and copies it into
+# /output, which docker-compose.prod.yml mounts as a shared volume for the
+# caddy container to serve as static files. Not a long-running service -
+# `docker compose up` runs this once per deploy and it exits.
+
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM alpine:3.20
+COPY --from=builder /app/dist /dist
+CMD ["sh", "-c", "rm -rf /output/* && cp -r /dist/. /output/"]

@@ -15,6 +15,7 @@ from .views import (
     TransactionImportConfirmView,
     TransactionImportView,
     TransactionViewSet,
+    VoiceCaptureView,
     YearlyExpenseView,
 )
 
@@ -40,6 +41,7 @@ urlpatterns = [
     path("networth/summary/", FreedomSummaryView.as_view(), name="networth-summary"),
     path("import/", TransactionImportView.as_view(), name="import"),
     path("import/confirm/", TransactionImportConfirmView.as_view(), name="import-confirm"),
+    path("voice/capture/", VoiceCaptureView.as_view(), name="voice-capture"),
     path("locations/", LocationsView.as_view(), name="locations"),
     path("", include(router.urls)),
 ]

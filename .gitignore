@@ -6,6 +6,7 @@ env/
 
 db.sqlite3
 .env
+.env.prod
 
 node_modules/
 dist/

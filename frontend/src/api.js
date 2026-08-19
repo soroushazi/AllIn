@@ -122,6 +122,10 @@ export const api = {
   import: (formData) => request('/api/import/', { method: 'POST', body: formData, isForm: true }),
   importConfirm: (rows) => request('/api/import/confirm/', { method: 'POST', body: { rows } }),
 
+  voice: {
+    capture: (formData) => request('/api/voice/capture/', { method: 'POST', body: formData, isForm: true }),
+  },
+
   networth: {
     accounts: {
       list: (params) => request(`/api/networth/accounts/${buildQuery(params)}`),

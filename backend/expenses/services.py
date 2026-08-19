@@ -1,9 +1,13 @@
 import io
+import json
+import os
 import re
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
 import pandas as pd
+import requests
+from django.contrib.auth.models import User
 from django.utils import timezone
 
 from .models import Card, Category, ColumnMapping, Income, MerchantRule, Transaction
@@ -140,6 +144,115 @@ def find_category_by_label(label):
     if not label:
         return None
     return Category.objects.filter(name__iexact=label).first()
+
+
+# --- Voice capture ----------------------------------------------------------
+
+_whisper_model = None
+
+
+def _get_whisper_model():
+    # Loaded lazily and cached at module scope - loading it per-request would
+    # be far too slow. WHISPER_MODEL is a size/accuracy tradeoff knob
+    # ("base.en" is a good default for short expense-logging clips on CPU);
+    # int8 compute keeps CPU inference fast enough for this app's scale (an
+    # ARM Oracle box, no GPU).
+    global _whisper_model
+    if _whisper_model is None:
+        from faster_whisper import WhisperModel
+
+        model_size = os.environ.get("WHISPER_MODEL", "base.en")
+        _whisper_model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    return _whisper_model
+
+
+def transcribe_audio(file_obj):
+    """Transcribe a short voice-note recording into plain text. Accepts
+    whatever format MediaRecorder produced (webm/opus, mp4/aac, ...) -
+    faster-whisper decodes via PyAV, which bundles its own ffmpeg, so no
+    separate ffmpeg install or format conversion step is needed."""
+    model = _get_whisper_model()
+    segments, _info = model.transcribe(file_obj, language="en")
+    return " ".join(segment.text.strip() for segment in segments).strip()
+
+
+def parse_voice_transcript(transcript):
+    """Ask the self-hosted Ollama model to extract a draft transaction from a
+    raw voice transcript, then resolve its free-text category/owner guesses
+    against real data - reusing categorize_by_merchant (same MerchantRule
+    table imports use) and an exact username/category-name match, rather
+    than duplicating matching logic. Never auto-creates a new Category from
+    the LLM's guess: unlike a bank export's category column, an LLM's guess
+    isn't a fixed, known vocabulary, and Key principle 1 (draft-before-
+    commit for anything LLM-parsed) means an unmatched guess should just
+    leave the category for the user to pick, not invent one.
+
+    Never raises - a broken or unreachable LLM must not block showing the
+    transcript itself, so any failure just returns an unresolved draft for
+    the user to fill in by hand.
+    """
+    draft = {
+        "transcript": transcript,
+        "amount": None,
+        "description": None,
+        "notes": None,
+        "category_id": None,
+        "category_name": None,
+        "owner": None,
+    }
+    if not transcript:
+        return draft
+
+    category_names = list(Category.objects.order_by("name").values_list("name", flat=True))
+    owner_names = list(User.objects.order_by("id").values_list("username", flat=True))
+
+    prompt = (
+        "Extract a household expense from this voice transcript. Respond "
+        "with only a JSON object, no other text, with exactly these keys: "
+        '"amount" (number, no currency symbol, or null), "merchant" (short '
+        f'string, or null), "category" (must be exactly one of {category_names} '
+        f'or null - never invent a new one), "owner" (must be exactly one of '
+        f'{owner_names} or null), "notes" (a short free-text detail beyond '
+        'the category, or null).\n\n'
+        f'Transcript: "{transcript}"'
+    )
+
+    ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
+    model = os.environ.get("OLLAMA_MODEL", "phi3")
+    try:
+        # CPU-only inference for a few-billion-parameter model is genuinely
+        # slow (measured ~20s for a short transcript on this dev box, even
+        # with the model already loaded) - a tight timeout here would make
+        # this fall back to an unresolved draft on nearly every real request,
+        # not just truly-broken ones.
+        response = requests.post(
+            f"{ollama_url}/api/generate",
+            json={"model": model, "prompt": prompt, "format": "json", "stream": False},
+            timeout=90,
+        )
+        response.raise_for_status()
+        parsed = json.loads(response.json()["response"])
+    except (requests.RequestException, ValueError, KeyError):
+        return draft
+
+    merchant = parsed.get("merchant") or None
+    draft["amount"] = parsed.get("amount")
+    draft["description"] = merchant
+    draft["notes"] = parsed.get("notes") or None
+
+    category = categorize_by_merchant(merchant) if merchant else None
+    if category is None and parsed.get("category"):
+        category = Category.objects.filter(name__iexact=parsed["category"]).first()
+    if category is not None:
+        draft["category_id"] = category.id
+        draft["category_name"] = category.name
+
+    if parsed.get("owner"):
+        owner = User.objects.filter(username__iexact=parsed["owner"]).first()
+        if owner is not None:
+            draft["owner"] = owner.username
+
+    return draft
 
 
 def get_period_range(period):

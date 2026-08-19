@@ -1,0 +1,26 @@
+# Production reverse proxy + TLS + static file serving for Jiring.
+# {$DOMAIN} is substituted from .env.prod - Caddy issues/renews a real
+# Let's Encrypt certificate automatically once DNS points here and 80/443
+# are reachable from the internet (see the deploy runbook).
+
+{$DOMAIN} {
+	encode gzip
+
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+
+	handle /admin* {
+		reverse_proxy backend:8000
+	}
+
+	handle /static/* {
+		reverse_proxy backend:8000
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

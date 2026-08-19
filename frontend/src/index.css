@@ -679,3 +679,33 @@ button.primary:disabled {
     transform: translateY(8px) scale(0.97);
   }
 }
+
+/* --- Voice --- */
+
+.voice-record-button {
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: var(--accent-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.voice-record-button.recording {
+  background: var(--danger, #d64545);
+  animation: voice-recording-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes voice-recording-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(214, 69, 69, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 14px rgba(214, 69, 69, 0);
+  }
+}

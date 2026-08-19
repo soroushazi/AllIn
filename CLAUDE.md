@@ -119,8 +119,15 @@ Why these choices, so they don't get re-litigated:
   to payout even on a fixed biweekly schedule. Full CRUD (`IncomeViewSet`,
   `/api/income/`) filtered by owner/date_from/date_to, same pattern as
   Transaction. Feeds the Overview "Income vs spending" card.
-- **VoiceDraft** (phase 2) — parsed-but-unconfirmed transaction awaiting one-tap
-  confirmation. Never auto-commits into Transaction.
+- **VoiceDraft** — sketched here originally as a model, but built (2026-08-19)
+  as a stateless draft instead, same precedent as import's
+  `pending_transactions` (see the 2026-08-16 "Import: review-before-commit"
+  note): a voice recording is transcribed (self-hosted Whisper) and parsed
+  (self-hosted Ollama/Phi-3) into a draft that's never written to the
+  database - the existing `AddTransactionForm` (Transactions/Import's manual
+  add) is reused as the one-tap confirm UI, prefilled from the parse result,
+  with `source="voice"` once submitted through the same `POST
+  /api/transactions/` manual-add path. See the 2026-08-19 status note.
 - **NetWorthAccount** — owner, name, category (`savings`/`investment`/`loan`/
   `asset`/`liability` — the last two are free-form catch-alls for anything
   beyond the three named buckets). Powers the Financial Freedom tab. Doesn't
@@ -1541,16 +1548,136 @@ categorization). Voice-to-text itself is self-hosted Whisper/
 into structured `{amount, merchant, category, owner}` (Phase 3) - see the
 Stack section above for why that split.
 
+#### Voice capture (Phase 2+3) + Oracle Cloud deploy prep — 2026-08-19
+
+Built voice-to-text + LLM parsing (Phases 2 and 3 together, since they turned
+out to have no natural stopping point in between once actually building
+them), plus the infrastructure to deploy the whole app to the user's Oracle
+Cloud Free Tier ARM Ampere A1 instance (already provisioned, real domain
+available). Local build+verify first, deploy prep second, per the user's
+explicit sequencing.
+
+**Voice capture** - deliberately reuses existing pieces instead of adding a
+VoiceDraft model or a second commit endpoint (see the updated Data model
+entry above):
+- `transcribe_audio()`/`parse_voice_transcript()` (`services.py`) - a
+  lazily-loaded, module-level `faster-whisper` model (`WHISPER_MODEL` env,
+  default `base.en`, CPU/int8) transcribes the recording; `parse_voice_
+  transcript()` then asks the self-hosted Ollama model (`OLLAMA_URL`/
+  `OLLAMA_MODEL` env, default `phi3`) to extract `{amount, merchant,
+  category, owner, notes}` via `format: "json"`, and resolves the free-text
+  category/owner guesses against real data - `categorize_by_merchant()`
+  (existing MerchantRule lookup) first, falling back to an exact
+  case-insensitive `Category`/`User` match. **Never auto-creates a Category**
+  from the LLM's guess (unlike the bank-import label case, an LLM guess isn't
+  a fixed vocabulary) - an unmatched guess just leaves the draft
+  uncategorized for the user to pick. Any Ollama failure (unreachable, bad
+  JSON) is caught and falls back to an unresolved draft rather than a 500 -
+  the transcript alone is still useful even if parsing breaks.
+- New stateless `POST /api/voice/capture/` (`VoiceCaptureView`) - transcribes
+  + parses, returns the draft, writes nothing to the database. Same
+  precedent as import's `pending_transactions` preview.
+- `TransactionCreateSerializer` gained an optional `source` field
+  (`"manual"`/`"voice"` only - `"import"` explicitly rejected, since bulk
+  statement rows always go through `commit_import_rows` instead) so the
+  existing manual-add path can also produce `source="voice"` rows.
+- `AddTransactionForm.jsx` gained optional `initialValues`/`source` props
+  (backward compatible - both existing call sites, Import's "Add
+  transaction" tab and Transactions' add dialog, are unaffected). `card` is
+  deliberately never prefilled even when the LLM guesses an owner - the
+  guess only narrows which cards `Voice.jsx` offers in the dropdown, the
+  person always picks explicitly, same as any manual add.
+- New `pages/Voice.jsx` - tap-to-record using `MediaRecorder`, mime type
+  feature-detected via `isTypeSupported()` (webm preferred, mp4 fallback for
+  iOS Safari, which can't record webm - the detail that makes this actually
+  work in an installed iPhone PWA). On stop: uploads to `/api/voice/
+  capture/`, shows the transcript, then renders `AddTransactionForm`
+  prefilled from the draft. New `.voice-record-button` CSS (large circular
+  button, red pulsing `recording` state via a new `@keyframes voice-
+  recording-pulse`).
+- **Found and fixed a real timing bug during verification**: the first
+  Ollama call used a 30s timeout, but CPU-only phi3 inference measured
+  ~19-20s *after* the model was already warm in memory - a cold request
+  (model still loading) blew past 30s and silently fell back to an
+  all-null draft (caught by the broad exception handler, so it looked like
+  a successful-but-empty response, not an error). Raised to 90s. Confirmed
+  fixed by re-running the exact same request after the model was warm:
+  correct `amount`/`merchant`/`category`/`owner`/`notes` all resolved.
+
+**Local dev infra**: `docker-compose.yml` gained an `ollama` service
+(`ollama/ollama:latest`, named volume, no host port - only `backend` reaches
+it internally) and `backend` gained `OLLAMA_URL`/`OLLAMA_MODEL`/
+`WHISPER_MODEL` env defaults plus a `whisper_cache` volume so the Whisper
+model persists across container recreates. `requirements.txt` gained
+`faster-whisper`, `requests`, and (for the prod deploy below) `gunicorn`/
+`whitenoise`. The one-time `docker compose exec ollama ollama pull phi3` is
+a manual step, not automated (matches "no over-engineering" - it runs once).
+
+**Verified end-to-end** with a throwaway account/card/category/MerchantRule
+(deleted after, confirmed real data - 8 cards, 27 categories, 41
+transactions - unaffected throughout): a synthetic speech clip
+("Twelve dollars at Starbucks for coffee", generated via `espeak-ng` since
+no real mic input is possible in this environment) transcribed correctly via
+real HTTP/curl, correctly matched an existing `starbucks` MerchantRule
+(taking priority over the LLM's own category guess), and committed
+correctly as a real `source="voice"` transaction via the existing `POST
+/api/transactions/`. Separately, since real speech can't be recorded
+headlessly, the *frontend* wiring was verified via headless Playwright with
+Chromium's fake-media-device flags (a real `MediaRecorder` start/stop cycle
+runs against a fake audio stream; only the `/api/voice/capture/` network
+response was mocked, since the real backend pipeline was already verified
+via curl) - confirmed the record button/pulsing-recording state/draft
+rendering/prefilled form/card-left-blank/submit/confirmation all work,
+including at 375px width in dark mode (screenshots reviewed). Also directly
+verified `TransactionCreateSerializer`'s new `source` field: `"import"` is
+rejected with a validation error, omitting `source` still defaults to
+`"manual"` (existing call sites unaffected). `npm run build`/`npm run lint`
+and `python manage.py check` clean throughout.
+
+**Oracle Cloud deploy prep** (not yet run against the real instance - the
+user runs deploy commands themselves; see the runbook given to them
+directly, not committed to the repo): new `docker-compose.prod.yml`
+(Postgres with no host port exposed, `backend` via gunicorn instead of
+runserver, the same `ollama` service, a one-shot `frontend-build` service
+that `npm run build`s and writes `dist/` into a shared volume, and `caddy`
+for TLS + reverse-proxy + static serving - one extra container instead of a
+separate nginx+certbot setup), `Caddyfile` (validated via `caddy validate`),
+`frontend/Dockerfile.prod` (multi-stage build, verified builds clean
+locally), and `.env.prod.example` documenting every required var
+(`.env.prod` itself is gitignored). `settings.py` gained `whitenoise`
+middleware + `STATIC_ROOT`/`STORAGES` so `/admin/` renders correctly once
+`DEBUG=false` (a no-op locally, since dev's `runserver` never runs
+`collectstatic`). Postgres starts fresh on Oracle per the user's choice - no
+data migration from local dev. **Known open risk, can't be tested from this
+x86 environment**: `faster-whisper`'s dependencies (`ctranslate2`, `av`)
+need aarch64 wheels for the ARM Ampere A1 instance - the backend image built
+and ran cleanly on x86 here, but the first real `docker compose -f
+docker-compose.prod.yml build` on the actual Oracle box is the first true
+test of that; if a wheel is missing, the fix is pinning to whichever
+`ctranslate2` version last published `manylinux2014_aarch64` wheels, or
+falling back to a slower from-source build.
+
 ### Phase 2 — Voice capture
-- [ ] `MediaRecorder` audio capture in the PWA
-- [ ] Upload endpoint + self-hosted Whisper/`faster-whisper` for transcription
-- [ ] Show raw transcript in-app (no parsing yet) to validate STT quality
+- [x] `MediaRecorder` audio capture in the PWA
+- [x] Upload endpoint + self-hosted Whisper/`faster-whisper` for transcription
+- [x] Show raw transcript in-app - done as part of the same round as Phase 3
+      below rather than as a separate no-parsing-yet checkpoint (see the
+      2026-08-19 status note) - the transcript is always shown regardless of
+      whether Ollama's parse succeeds.
 
 ### Phase 3 — LLM parsing
-- [ ] Ollama running Phi-3 Mini (try Llama 3.1 8B if extraction accuracy is poor)
-- [ ] Prompt to extract {amount, merchant, category, owner} as structured JSON
+- [x] Ollama running Phi-3 Mini (local dev, and pullable the same way on the
+      Oracle deploy - try Llama 3.1 8B if extraction accuracy is poor)
+- [x] Prompt to extract {amount, merchant, category, owner} as structured JSON
       from a transcript
-- [ ] VoiceDraft model + one-tap confirm UI before committing to Transaction
+- [x] One-tap confirm UI before committing to Transaction - built by reusing
+      `AddTransactionForm` (prefilled from the parse) rather than a new
+      VoiceDraft model/UI - see the Data model section above and the
+      2026-08-19 status note.
+- [ ] Both of us actually using voice capture day-to-day - built and verified
+      this session (transcription, LLM parsing, category/owner resolution,
+      commit-as-voice-transaction), but not yet tried against a real phone
+      mic or real speech.
 
 ## Explicitly out of scope (for now)
 
