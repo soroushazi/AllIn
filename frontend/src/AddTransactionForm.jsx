@@ -10,9 +10,10 @@ function todayISO() {
 // A single, manually-typed transaction - as opposed to a bulk statement
 // upload. Shared between the Import screen's "Add transaction" tab, the form
 // at the top of the Transactions screen, and the Voice screen's
-// confirm-before-commit draft (initialValues/source - see Voice.jsx). The
-// voice draft can't guess which card, so cardId always starts blank
-// regardless of initialValues - the user picks that themselves either way.
+// confirm-before-commit draft (initialValues/source - see Voice.jsx).
+// initialValues.cardId prefills the card only when the voice draft resolved
+// one with confidence (see resolve_card in services.py) - the user can
+// always change it, same as every other prefilled field here.
 export default function AddTransactionForm({
   cards,
   categories,
@@ -22,13 +23,13 @@ export default function AddTransactionForm({
   initialValues,
   source = 'manual',
 }) {
-  const [cardId, setCardId] = useState('')
+  const [cardId, setCardId] = useState(initialValues?.cardId || '')
   const [date, setDate] = useState(todayISO())
   const [description, setDescription] = useState(initialValues?.description || '')
   const [direction, setDirection] = useState(initialValues?.direction || 'out')
   const [amount, setAmount] = useState(initialValues?.amount || '')
   const [categoryId, setCategoryId] = useState(initialValues?.categoryId || '')
-  const [location, setLocation] = useState('')
+  const [location, setLocation] = useState(initialValues?.location || '')
   const [notes, setNotes] = useState(initialValues?.notes || '')
   const [tags, setTags] = useState([])
   const [submitting, setSubmitting] = useState(false)

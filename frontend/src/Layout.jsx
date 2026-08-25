@@ -14,7 +14,7 @@ export default function Layout() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <span className="brand">AllIn</span>
+        <NavLink className="brand" to="/">AllIn</NavLink>
         <AccountMenu />
       </header>
 

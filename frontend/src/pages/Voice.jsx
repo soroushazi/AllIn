@@ -21,7 +21,7 @@ export default function Voice() {
 
   const [status, setStatus] = useState('idle') // idle | recording | processing | draft | error
   const [error, setError] = useState(null)
-  const [draft, setDraft] = useState(null) // { transcript, amount, description, notes, category_id, owner }
+  const [draft, setDraft] = useState(null) // { transcript, amount, description, location, notes, category_id, owner, card_id }
   const [justAdded, setJustAdded] = useState(null)
 
   const mediaRecorderRef = useRef(null)
@@ -82,9 +82,10 @@ export default function Voice() {
     setStatus('idle')
   }
 
-  // The LLM's owner guess narrows which cards are offered, but never
-  // auto-picks one outright - it has no signal for which specific card was
-  // used, so the person always makes that final choice themselves.
+  // The LLM's owner guess narrows which cards are offered even when no
+  // specific card was confidently resolved (draft.card_id) - see
+  // resolve_card in services.py, which only returns a card when it's an
+  // unambiguous match, same never-guess spirit as category resolution.
   const cardOptions = draft?.owner ? cards.filter((c) => c.owner === draft.owner) : cards
 
   return (
@@ -146,6 +147,8 @@ export default function Voice() {
               amount: draft.amount != null ? Math.abs(Number(draft.amount)).toFixed(2) : '',
               categoryId: draft.category_id || '',
               notes: draft.notes || '',
+              location: draft.location || '',
+              cardId: draft.card_id ? String(draft.card_id) : '',
             }}
           />
         </div>

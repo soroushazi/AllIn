@@ -1657,6 +1657,198 @@ test of that; if a wheel is missing, the fix is pinning to whichever
 `ctranslate2` version last published `manylinux2014_aarch64` wheels, or
 falling back to a slower from-source build.
 
+#### Voice: full-field extraction (item/store/card, not just merchant) + name-recognition bias — 2026-08-25
+
+User's real-world use had two gaps: (1) Whisper sometimes mishears "Soroush"/
+"Shiva" and card issuer names since they're not common English words, and
+(2) the parsed draft only ever filled `description` (from a single
+`merchant` field) and `category`/`owner` - it never separated "what was
+bought" from "where", and never attempted to identify *which specific card*
+was used, even though people naturally say things like "paid with Soroush's
+Amex card."
+
+**Whisper name bias** (`transcribe_audio()`, `services.py`): added
+`initial_prompt` (a new `_voice_vocabulary_hint()` helper) - a
+comma-separated list of this household's actual proper nouns (both
+usernames, capitalized, plus every real Card name), built fresh from the DB
+each call rather than hardcoded, so it stays correct across a username
+change or a newly-added card. `initial_prompt` conditions Whisper's decoder
+toward this vocabulary without forcing it verbatim - doesn't guarantee
+correct transcription, but measurably nudges ambiguous audio toward the
+household's own words instead of a phonetically-similar generic word.
+
+**Richer field extraction** (`parse_voice_transcript()`, same file): the
+Ollama prompt now asks for `description` (the item itself, e.g. "cookies")
+and `location` (the store/merchant, e.g. "Walmart") as two separate keys
+instead of one `merchant` field, plus a new `card` key (a short phrase like
+"Amex" or "UHFCU debit") - explicitly instructed not to guess `owner` or
+`card` unless that person/card was actually named in the transcript (added
+after testing showed the model would otherwise infer an owner from
+context - e.g. "paid with my UHFCU debit card" defaulting to Soroush with
+no real basis - a bad-guess risk instead of a "leave nothing filled in"
+draft, wrong in the same way Key principle 1 warns against). Category
+resolution now checks `location` first via `categorize_by_merchant` (rules
+are taught against merchant text), falling back to `description`, then the
+LLM's own category guess.
+
+New `resolve_card(card_guess, owner)` matches the free-text `card` guess
+against the resolved owner's real `Card` rows (or all cards if owner wasn't
+resolved) by word overlap against the card name, with "credit"/"debit"
+wording as a secondary tie-breaking signal rather than an equal-weight one
+(an earlier version double-counted "credit" as both a name-word and a type
+match, which made "Amex credit" tie against "UHFCU - Credit" and resolve to
+nothing - fixed by excluding credit/debit from the name-overlap score and
+scoring name-word overlap higher). Only returns a card when exactly one is
+the unambiguous best match - same never-guess-when-ambiguous principle as
+category/owner resolution, so a bare "UHFCU" with no credit/debit qualifier
+correctly stays unresolved (the owner has two UHFCU cards) rather than
+picking one at random.
+
+`AddTransactionForm.jsx` now accepts `initialValues.location` and
+`initialValues.cardId` (previously only description/amount/category/notes
+were prefillable, and card was explicitly never prefilled - see the removed
+comment to that effect). `Voice.jsx` passes both through from the draft.
+
+Verified end-to-end against real data (2 users, 8 cards, 27 categories, 41
+transactions - all confirmed unaffected afterward) via the real backend +
+real Ollama (phi3, warmed up first - cold model load on this box took
+several minutes and blew past the 90s timeout twice before warming, not a
+bug, matches the known cold-start behavior from the 2026-08-19 note, just
+slower on this box than the one that note was written on):
+- `resolve_card()` unit-tested directly against the real 8 cards for
+  ambiguous/unambiguous/wrong-owner cases (documented the "Amex credit" tie
+  bug and its fix above).
+- `parse_voice_transcript()` run against several real transcripts
+  (`"20 dollars for cookies from walmart, paid with Soroush Amex card"` and
+  three more varied phrasings) - each correctly split amount/description/
+  location, and correctly resolved owner + the exact right card only when a
+  person/card was actually named, leaving both null otherwise (confirmed
+  after the prompt tightening above).
+- Full HTTP round-trip via curl (login as a throwaway user, real
+  `multipart/form-data` upload) against a synthetic speech clip
+  (`espeak-ng`, since real mic input isn't possible in this environment) -
+  confirmed `/api/voice/capture/` returns the new `location`/`card_id`/
+  `card_name` fields correctly over real HTTP, not just via the Python
+  function directly.
+- `transcribe_audio()` with the new `initial_prompt` run directly against
+  the same synthetic clip - transcribed "Soroush" correctly; couldn't be a
+  true bias A/B test since TTS pronunciation isn't representative of a real
+  mishearing case, but confirms the mechanism runs correctly end-to-end
+  with no regression to plain transcription.
+`python manage.py check`, `npm run build`, `npm run lint` all clean. All
+test data (throwaway user, temp audio files) cleaned up afterward.
+
+#### Overview: hide category-scoped cards when a single category is selected — 2026-08-25
+
+User noticed that filtering Overview to one category still showed "By
+category" (a breakdown across all categories - meaningless when already
+narrowed to one), "Budget vs actual" (a multi-category comparison), and
+"Income vs spending" (comparing income against only-that-category spending,
+which isn't a meaningful "spending" figure). Added `isCategoryFiltered =
+categoryId !== ''` (`Overview.jsx`) - true for a real category id *or* the
+"Uncategorized" sentinel value, since both narrow to a single bucket - and
+gated all three cards on `!isCategoryFiltered` alongside their existing
+conditions (`!isCashInOnly`, `isMonthlyPeriod` where applicable). Also
+skipped the Income vs spending card's income fetch entirely when
+category-filtered (previously only gated on `isMonthlyPeriod`), so the now
+always-hidden card doesn't still fire a wasted API call. "Total spent",
+"Transactions", "By person", and "Spend trend" are unaffected - all still
+make sense scoped to one category.
+
+Verified via headless Playwright against a throwaway user/card/category/
+transaction (deleted afterward, confirmed real data - 2 users, 8 cards, 27
+categories, 41 transactions - unaffected): default "All categories" view
+shows all 7 cards; selecting the test category correctly leaves exactly 4
+("Total spent", "Transactions", "By person", "Spend trend") and hides the
+other 3. Screenshot reviewed. `npm run build`/`npm run lint` clean.
+
+#### Real data incident + automated Oracle backups — 2026-08-25, right after
+
+**Incident**: while cleaning up disk space in the Codespace (Ollama/Whisper
+were eating ~15GB), `docker compose down -v` was run intending to remove
+just the two Ollama-related volumes - the `-v` flag actually removes *every*
+volume declared in `docker-compose.yml`, including `jiring_postgres_data`,
+which held the real local household database (both real accounts, 8 cards,
+27 categories, 41 transactions, 6 income entries, all learned
+`MerchantRule`s/`ColumnMapping`s). Confirmed unrecoverable - no leftover
+volume directory on disk, no `.sql`/dump backup anywhere in the environment,
+nothing in bash history. The user confirmed the separately-deployed Oracle
+Cloud instance (a different machine, never touched by anything local) still
+has its own real data intact, so the practical damage was: local dev's
+database, which the user had also been maintaining by hand in parallel,
+had to be rebuilt from scratch (schema via `python manage.py migrate` -
+clean, since migrations are in git; login accounts recreated by the user
+via `create_household_users`, real household data not reconstructed
+locally since Oracle is now the actual day-to-day copy).
+
+**Root cause takeaway, worth remembering**: `docker compose down -v` is
+effectively "delete all data for every service in this compose file," not
+"stop everything." Removing a specific volume should always be
+`docker volume rm <name>` for exactly the volumes intended, never `down -v`
+as a shortcut, whenever any volume in the file might hold real data.
+
+**Follow-up the user asked for**: automated backups for the Oracle Postgres
+database, since it was now confirmed to be the sole copy of the real
+household data with zero backup. Built:
+- **`scripts/backup_db.sh`** - dumps the prod DB (`docker compose -f
+  docker-compose.prod.yml exec -T db pg_dump -U "$POSTGRES_USER" --clean
+  --if-exists "$POSTGRES_DB"`, gzipped) to a timestamped file in
+  `~/jiring-backups` on the Oracle box's own disk (outside the git working
+  tree entirely, not just gitignored, so there's no path by which real
+  financial data could ever end up staged for a commit) - `--clean
+  --if-exists` means the dump includes `DROP TABLE IF EXISTS` first, so
+  restoring is safe against a non-empty target too, not just a freshly
+  migrated one. Prunes local dumps past `BACKUP_RETENTION_DAYS` (default
+  30) via `find -mtime`. Run with `--upload` (meant for a weekly cron
+  entry), it also PUTs that same dump to Oracle Object Storage via a
+  **Pre-Authenticated Request URL** (`BACKUP_PAR_URL` in `.env.prod`, see
+  `.env.prod.example`) - deliberately chosen over the OCI CLI to avoid
+  installing/configuring an extra tool and managing API key files on the
+  box: a PAR is just a plain `curl -X PUT` against a secret URL, and a
+  *write-only* PAR (Access Type "Permit object writes") can add backups but
+  can't list, read, or delete existing ones, so even a leaked URL couldn't
+  expose or wipe past backups. Both cron lines documented in the script's
+  own header (daily local-only at 3am, weekly `--upload` on Sundays covers
+  both in one run) - installing the actual crontab entries is a one-time
+  step the user runs on the Oracle box themselves, since this environment
+  has no SSH access to it.
+- **`scripts/restore_db.sh`** - the inverse: `gunzip -c <dump> | docker
+  compose -f docker-compose.prod.yml exec -T db psql -U "$POSTGRES_USER"
+  "$POSTGRES_DB"`. Prompts for a typed "yes" confirmation before running
+  (skippable with `--yes` for scripted use) since it's destructive by
+  design - a restore is meant to replace whatever's currently there.
+- Data volume sized checked directly rather than assumed: a real dump of
+  the (much larger, real) local household DB schema came to 8KB gzipped
+  even mid-session with test data in it - confirms the user's own instinct
+  that retention/space was a non-issue at this app's real scale, even
+  keeping daily local copies for a year (worth noting since the user
+  originally proposed weekly-only "to save space" - talked through it and
+  landed on daily-local + weekly-off-box instead, at effectively zero
+  storage cost).
+
+Verified the actual mechanics end-to-end against the local dev database
+(not prod - no SSH access to the Oracle box from this environment; same
+`pg_dump`/`psql` commands, just pointed at `docker-compose.yml` instead of
+`docker-compose.prod.yml`) with throwaway users: dumped, gzip-integrity
+checked, confirmed `--clean --if-exists` really emits `DROP TABLE`
+statements (21 of them), then did a real destructive round-trip - added a
+second throwaway user after the dump, ran the restore command, and
+confirmed the DB reverted to exactly the dump's contents (the second user
+gone, the first one back) with zero errors in the psql output. Also
+separately verified the retention-pruning `find -mtime` command against a
+synthetic 40-day-old file - deleted only the old one, left the fresh dump
+and an unrelated log file untouched. All test users/files cleaned up
+afterward; real local dev DB is now empty (schema only) as expected post-
+incident - the user still needs to run `create_household_users` themselves
+for local dev login.
+
+**Not yet done - the user's own next steps on the Oracle box**: `git pull`,
+`chmod +x scripts/*.sh`, create the Object Storage bucket + write-only PAR
+and add `BACKUP_PAR_URL` to `.env.prod` if they want the off-box upload
+enabled, then install the two crontab lines from `scripts/backup_db.sh`'s
+header comment. Nothing here runs automatically until that crontab step is
+done on the actual box.
+
 ### Phase 2 — Voice capture
 - [x] `MediaRecorder` audio capture in the PWA
 - [x] Upload endpoint + self-hosted Whisper/`faster-whisper` for transcription

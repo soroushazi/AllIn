@@ -56,8 +56,15 @@ export default function Overview() {
       .catch((err) => setError(err.message))
   }, [owner, categoryId, direction, amountMin, amountMax, rangeStart, rangeEnd])
 
+  const isCashInOnly = direction === 'in'
+  // "" is "All categories" - anything else (a real category id, or the
+  // "uncategorized" sentinel) is a single-category view, where a breakdown
+  // by category, a budget comparison across categories, or an income
+  // comparison against only-that-category spending don't mean anything.
+  const isCategoryFiltered = categoryId !== ''
+
   useEffect(() => {
-    if (!isMonthlyPeriod) {
+    if (!isMonthlyPeriod || isCategoryFiltered) {
       setIncomes([])
       return
     }
@@ -65,9 +72,7 @@ export default function Overview() {
       .list({ owner, date_from: toISO(rangeStart), date_to: toISO(rangeEnd) })
       .then(setIncomes)
       .catch((err) => setError(err.message))
-  }, [owner, rangeStart, rangeEnd, isMonthlyPeriod])
-
-  const isCashInOnly = direction === 'in'
+  }, [owner, rangeStart, rangeEnd, isMonthlyPeriod, isCategoryFiltered])
 
   const categoryById = useMemo(() => Object.fromEntries(categories.map((c) => [c.id, c])), [categories])
 
@@ -269,7 +274,7 @@ export default function Overview() {
         </div>
       )}
 
-      {!isCashInOnly && (
+      {!isCashInOnly && !isCategoryFiltered && (
         <div className="card">
           <div className="muted small" style={{ marginBottom: 8 }}>
             By category
@@ -295,7 +300,7 @@ export default function Overview() {
         </div>
       )}
 
-      {!isCashInOnly && isMonthlyPeriod && budgetVsActual.length > 0 && (
+      {!isCashInOnly && !isCategoryFiltered && isMonthlyPeriod && budgetVsActual.length > 0 && (
         <div className="card">
           <div className="muted small" style={{ marginBottom: 8 }}>
             Budget vs actual
@@ -325,7 +330,7 @@ export default function Overview() {
         </div>
       )}
 
-      {!isCashInOnly && isMonthlyPeriod && (
+      {!isCashInOnly && !isCategoryFiltered && isMonthlyPeriod && (
         <div className="card">
           <div className="muted small" style={{ marginBottom: 8 }}>
             Income vs spending

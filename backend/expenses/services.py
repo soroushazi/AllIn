@@ -166,26 +166,82 @@ def _get_whisper_model():
     return _whisper_model
 
 
+def _voice_vocabulary_hint():
+    """A comma-separated list of this household's own proper nouns (user
+    names, card names) fed to Whisper as an initial_prompt. Whisper doesn't
+    treat this as literal text to transcribe - it conditions the decoder's
+    language model toward this vocabulary, which measurably helps on short
+    ambiguous words like "Soroush"/"Shiva" that aren't common English and
+    would otherwise get misheard as something phonetically close. Built from
+    real data (not hardcoded) so it stays correct across a username change or
+    a newly-added card without a code change.
+    """
+    names = User.objects.order_by("id").values_list("username", flat=True)
+    card_names = Card.objects.order_by("name").values_list("name", flat=True).distinct()
+    words = sorted({n[:1].upper() + n[1:] for n in names} | set(card_names))
+    return ", ".join(words)
+
+
 def transcribe_audio(file_obj):
     """Transcribe a short voice-note recording into plain text. Accepts
     whatever format MediaRecorder produced (webm/opus, mp4/aac, ...) -
     faster-whisper decodes via PyAV, which bundles its own ffmpeg, so no
     separate ffmpeg install or format conversion step is needed."""
     model = _get_whisper_model()
-    segments, _info = model.transcribe(file_obj, language="en")
+    segments, _info = model.transcribe(
+        file_obj, language="en", initial_prompt=_voice_vocabulary_hint()
+    )
     return " ".join(segment.text.strip() for segment in segments).strip()
+
+
+def resolve_card(card_guess, owner):
+    """Match a free-text card guess like "Amex" or "UHFCU credit" against
+    the resolved owner's real Card rows (or every card if the owner wasn't
+    resolved). Word-overlap match against the card name (plus the card's own
+    debit/credit type) rather than a strict substring, since real card names
+    have punctuation ("UHFCU - Credit") the model won't reliably reproduce.
+    Only returns a card when exactly one is the best match - same
+    never-guess-when-ambiguous spirit as category resolution below, since a
+    wrong card is worse than an unfilled one the user picks themselves.
+    """
+    if not card_guess:
+        return None
+    # "credit"/"debit" are handled as a separate, lower-weight signal below -
+    # counting them as ordinary name words too would let a card whose *name*
+    # happens to contain "Credit" (e.g. "UHFCU - Credit") tie with a card
+    # that's actually a stronger name match (e.g. "Amex") just because the
+    # guess also said "credit" as its type, not its name.
+    type_words = {"credit", "debit"}
+    guess_words = set(card_guess.lower().replace("-", " ").split())
+    guess_name_words = guess_words - type_words
+    candidates = Card.objects.filter(owner=owner) if owner else Card.objects.all()
+    scored = []
+    for card in candidates:
+        name_words = set(card.name.lower().replace("-", " ").split()) - type_words
+        score = len(name_words & guess_name_words) * 2
+        if card.type in guess_words:
+            score += 1
+        if score:
+            scored.append((score, card))
+    if not scored:
+        return None
+    best_score = max(score for score, _ in scored)
+    best = [card for score, card in scored if score == best_score]
+    return best[0] if len(best) == 1 else None
 
 
 def parse_voice_transcript(transcript):
     """Ask the self-hosted Ollama model to extract a draft transaction from a
-    raw voice transcript, then resolve its free-text category/owner guesses
-    against real data - reusing categorize_by_merchant (same MerchantRule
-    table imports use) and an exact username/category-name match, rather
-    than duplicating matching logic. Never auto-creates a new Category from
-    the LLM's guess: unlike a bank export's category column, an LLM's guess
-    isn't a fixed, known vocabulary, and Key principle 1 (draft-before-
-    commit for anything LLM-parsed) means an unmatched guess should just
-    leave the category for the user to pick, not invent one.
+    raw voice transcript, then resolve its free-text category/owner/card
+    guesses against real data - reusing categorize_by_merchant (same
+    MerchantRule table imports use), resolve_card above, and an exact
+    username/category-name match, rather than duplicating matching logic.
+    Never auto-creates a new Category from the LLM's guess: unlike a bank
+    export's category column, an LLM's guess isn't a fixed, known
+    vocabulary, and Key principle 1 (draft-before-commit for anything
+    LLM-parsed) means an unmatched guess should just leave the field for the
+    user to pick, not invent one - same reasoning applies to card: only
+    prefill it when resolve_card is confident, never guess.
 
     Never raises - a broken or unreachable LLM must not block showing the
     transcript itself, so any failure just returns an unresolved draft for
@@ -195,10 +251,13 @@ def parse_voice_transcript(transcript):
         "transcript": transcript,
         "amount": None,
         "description": None,
+        "location": None,
         "notes": None,
         "category_id": None,
         "category_name": None,
         "owner": None,
+        "card_id": None,
+        "card_name": None,
     }
     if not transcript:
         return draft
@@ -207,13 +266,28 @@ def parse_voice_transcript(transcript):
     owner_names = list(User.objects.order_by("id").values_list("username", flat=True))
 
     prompt = (
-        "Extract a household expense from this voice transcript. Respond "
-        "with only a JSON object, no other text, with exactly these keys: "
-        '"amount" (number, no currency symbol, or null), "merchant" (short '
-        f'string, or null), "category" (must be exactly one of {category_names} '
-        f'or null - never invent a new one), "owner" (must be exactly one of '
-        f'{owner_names} or null), "notes" (a short free-text detail beyond '
-        'the category, or null).\n\n'
+        "You extract structured data from a spoken household-expense note. "
+        "Respond with only a JSON object, no other text, no markdown, with "
+        "exactly these keys:\n"
+        '"amount" (number, no currency symbol, or null)\n'
+        '"description" (a short label for the specific item(s) purchased, '
+        'e.g. "cookies", "gas", "haircut" - not the store name, or null)\n'
+        '"location" (the store/merchant/place name, e.g. "Walmart", '
+        '"Starbucks", or null)\n'
+        f'"category" (must be exactly one of {category_names} or null - '
+        'never invent a new one)\n'
+        f'"owner" (must be exactly one of {owner_names} - only if that '
+        'person was actually named in the transcript, else null - never '
+        'guess from context)\n'
+        '"card" (a short phrase naming the card/bank actually mentioned, '
+        'e.g. "Amex", "Discover credit", "UHFCU debit" - or null if no card '
+        'was mentioned - never guess)\n'
+        '"notes" (any other short free-text detail beyond description/'
+        'category, or null)\n\n'
+        'Example: transcript "20 dollars for cookies from walmart, paid '
+        'with Soroush Amex card" -> {"amount": 20, "description": "cookies", '
+        '"location": "Walmart", "category": null, "owner": "soroush", '
+        '"card": "Amex", "notes": null}\n\n'
         f'Transcript: "{transcript}"'
     )
 
@@ -235,22 +309,35 @@ def parse_voice_transcript(transcript):
     except (requests.RequestException, ValueError, KeyError):
         return draft
 
-    merchant = parsed.get("merchant") or None
+    location = parsed.get("location") or None
+    description = parsed.get("description") or None
     draft["amount"] = parsed.get("amount")
-    draft["description"] = merchant
+    draft["description"] = description
+    draft["location"] = location
     draft["notes"] = parsed.get("notes") or None
 
-    category = categorize_by_merchant(merchant) if merchant else None
+    # Merchant rules are taught against real merchant/description text, so
+    # try the merchant-ish location first, then fall back to description -
+    # covers rules taught either way without duplicating the lookup.
+    category = categorize_by_merchant(location) if location else None
+    if category is None and description:
+        category = categorize_by_merchant(description)
     if category is None and parsed.get("category"):
         category = Category.objects.filter(name__iexact=parsed["category"]).first()
     if category is not None:
         draft["category_id"] = category.id
         draft["category_name"] = category.name
 
+    owner = None
     if parsed.get("owner"):
         owner = User.objects.filter(username__iexact=parsed["owner"]).first()
         if owner is not None:
             draft["owner"] = owner.username
+
+    card = resolve_card(parsed.get("card"), owner)
+    if card is not None:
+        draft["card_id"] = card.id
+        draft["card_name"] = card.name
 
     return draft
 
