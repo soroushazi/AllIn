@@ -92,6 +92,8 @@ textarea {
 .brand {
   font-weight: 700;
   font-size: 1.0625rem;
+  color: var(--text-primary);
+  text-decoration: none;
 }
 
 .page {
