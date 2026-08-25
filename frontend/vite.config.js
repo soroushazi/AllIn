@@ -26,8 +26,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['apple-touch-icon.png'],
       manifest: {
-        name: 'Jiring - Household Expenses',
-        short_name: 'Jiring',
+        name: 'AllIn - Household Expenses',
+        short_name: 'AllIn',
         description: 'Shared household expense tracker',
         theme_color: '#16a34a',
         background_color: '#0b0f0d',

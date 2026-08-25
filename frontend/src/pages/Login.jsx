@@ -30,7 +30,7 @@ export default function Login() {
   return (
     <div className="login-screen">
       <form className="login-card" onSubmit={handleSubmit}>
-        <h1>Jiring</h1>
+        <h1>AllIn</h1>
         <p className="muted">Household expenses</p>
 
         <div className="user-toggle">
