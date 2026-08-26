@@ -1849,6 +1849,58 @@ enabled, then install the two crontab lines from `scripts/backup_db.sh`'s
 header comment. Nothing here runs automatically until that crontab step is
 done on the actual box.
 
+#### Voice: explicit spoken category beats a stale MerchantRule; teach rules from location — 2026-08-26
+
+User's real voice notes surfaced two gaps in the field-extraction work from
+2026-08-25: (1) saying a category out loud ("category is Gift", "put this
+under Groceries") had no special weight - it was blended in as the same
+`category` field the LLM could also just guess, and a previously-learned
+`MerchantRule` on that merchant was checked *first*, so a stale rule could
+silently win over what the user had just said out loud; (2) recategorizing
+a manual/voice transaction taught `MerchantRule` from `transaction.
+description`, but for a manual/voice entry `description` is the item bought
+("cookies"), not the merchant - `location` ("Walmart") is the actual
+merchant name and the thing a future voice note would repeat, so the
+learned keyword was frequently useless.
+
+**Fix** (`services.py`, `parse_voice_transcript()`): the Ollama prompt now
+asks for two separate keys instead of one `category` - `category_stated`
+(only filled when the speaker explicitly named a category, in any phrasing:
+"category is X", "put this under X", "file this as X", "mark it as X",
+"this is X spending" - never guessed) and `category_guess` (the LLM's own
+soft contextual guess, e.g. Starbucks → Eating Out, inferred even when
+nothing was said explicitly). Resolution order is now: `category_stated` →
+`categorize_by_merchant(location)` → `categorize_by_merchant(description)`
+→ `category_guess` - i.e. an explicit spoken category is treated as the
+user overriding/confirming right now and beats a learned rule, but absent
+that, a learned rule still beats the LLM's own soft guess (unchanged from
+before). `TransactionCreateSerializer.create()` and
+`TransactionViewSet.recategorize()` (`serializers.py`/`views.py`) both now
+teach `MerchantRule` from `transaction.location or transaction.description`
+instead of `description` alone, matching how rules actually get matched
+against future imports/voice notes.
+
+Verified with mocked Ollama responses against a throwaway user/cards/
+categories/MerchantRule (real local DB was already empty going into this -
+see the backup-incident note above - so nothing needed cleanup-and-restore,
+just teardown after): a stale `target → Electronics` rule was correctly
+overridden by a spoken `category_stated: "Gift"`; with no `category_stated`,
+the same stale rule correctly still won over a conflicting
+`category_guess`; with neither a stated category nor a matching rule,
+`category_guess` was correctly used as the last resort; and
+`extract_merchant_keyword()` on a transaction with both `location` and a
+different `description` confirmed it now reads from `location`. Also ran
+`python manage.py check` and `npm run build` clean (no frontend changes
+were needed - `Voice.jsx`/`AddTransactionForm.jsx` already only consume the
+resolved `category_id`/`category_name`, unaffected by the stated/guess
+split happening entirely server-side). Not yet re-verified against a live
+Ollama/phi3 instance with this exact prompt wording after today's session restart
+(the 2026-08-25 commit that introduced this prompt was checked against a
+live phi3 before landing); worth a quick real-transcript sanity check next
+time Ollama is running, but the resolution-priority logic itself - the part
+that actually changed today - is fully covered by the mocked-response tests
+above.
+
 ### Phase 2 — Voice capture
 - [x] `MediaRecorder` audio capture in the PWA
 - [x] Upload endpoint + self-hosted Whisper/`faster-whisper` for transcription
