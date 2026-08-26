@@ -171,8 +171,12 @@ class TransactionCreateSerializer(serializers.ModelSerializer):
         # Same "learn from corrections" behavior as recategorize() - picking
         # a category while manually adding a transaction should still teach
         # future imports of the same merchant, not just future manual adds.
+        # Prefer location over description as the keyword source: for a
+        # manual/voice entry, description is the item bought ("cookies"),
+        # not the merchant - location ("Walmart") is the actual merchant
+        # name and the thing future imports/voice notes will repeat.
         if category is not None:
-            keyword = extract_merchant_keyword(transaction.description)
+            keyword = extract_merchant_keyword(transaction.location or transaction.description)
             if keyword:
                 MerchantRule.objects.update_or_create(keyword=keyword, defaults={"category": category})
 

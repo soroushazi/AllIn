@@ -274,8 +274,15 @@ def parse_voice_transcript(transcript):
         'e.g. "cookies", "gas", "haircut" - not the store name, or null)\n'
         '"location" (the store/merchant/place name, e.g. "Walmart", '
         '"Starbucks", or null)\n'
-        f'"category" (must be exactly one of {category_names} or null - '
-        'never invent a new one)\n'
+        f'"category_stated" (must be exactly one of {category_names} - only '
+        'if the speaker explicitly named that category themselves, using '
+        'ANY phrasing like "category is Travel", "put this under '
+        'Groceries", "file this as Entertainment", "mark it as Health", '
+        'or "this is Family spending" - else null - never guess this one)\n'
+        f'"category_guess" (your own best-guess category for the item/place, '
+        f'must be exactly one of {category_names} or null - never invent a '
+        'new one - this one you SHOULD infer from context even if not '
+        'explicitly said)\n'
         f'"owner" (must be exactly one of {owner_names} - only if that '
         'person was actually named in the transcript, else null - never '
         'guess from context)\n'
@@ -284,10 +291,19 @@ def parse_voice_transcript(transcript):
         'was mentioned - never guess)\n'
         '"notes" (any other short free-text detail beyond description/'
         'category, or null)\n\n'
-        'Example: transcript "20 dollars for cookies from walmart, paid '
+        'Example 1: transcript "20 dollars for cookies from walmart, paid '
         'with Soroush Amex card" -> {"amount": 20, "description": "cookies", '
-        '"location": "Walmart", "category": null, "owner": "soroush", '
-        '"card": "Amex", "notes": null}\n\n'
+        '"location": "Walmart", "category_stated": null, "category_guess": '
+        '"Groceries", "owner": "soroush", "card": "Amex", "notes": null}\n'
+        'Example 2: transcript "15 dollars for a birthday gift at Target, '
+        'category Gift" -> {"amount": 15, "description": "birthday gift", '
+        '"location": "Target", "category_stated": "Gift", "category_guess": '
+        '"Gift", "owner": null, "card": null, "notes": null}\n'
+        'Example 3: transcript "30 dollars at Walmart for a phone charger, '
+        'put this under Electronics" -> {"amount": 30, "description": '
+        '"phone charger", "location": "Walmart", "category_stated": '
+        '"Electronics", "category_guess": "Electronics", "owner": null, '
+        '"card": null, "notes": null}\n\n'
         f'Transcript: "{transcript}"'
     )
 
@@ -316,14 +332,21 @@ def parse_voice_transcript(transcript):
     draft["location"] = location
     draft["notes"] = parsed.get("notes") or None
 
-    # Merchant rules are taught against real merchant/description text, so
-    # try the merchant-ish location first, then fall back to description -
-    # covers rules taught either way without duplicating the lookup.
-    category = categorize_by_merchant(location) if location else None
+    # An explicitly spoken category ("category is Groceries") is the user
+    # overriding/confirming a category out loud, right now - that beats a
+    # possibly-stale learned MerchantRule, so it's checked first. Absent
+    # that, fall back to merchant rules (location, then description - rules
+    # are taught against merchant/description text either way), and only
+    # as a last resort the LLM's own soft contextual guess.
+    category = None
+    if parsed.get("category_stated"):
+        category = Category.objects.filter(name__iexact=parsed["category_stated"]).first()
+    if category is None and location:
+        category = categorize_by_merchant(location)
     if category is None and description:
         category = categorize_by_merchant(description)
-    if category is None and parsed.get("category"):
-        category = Category.objects.filter(name__iexact=parsed["category"]).first()
+    if category is None and parsed.get("category_guess"):
+        category = Category.objects.filter(name__iexact=parsed["category_guess"]).first()
     if category is not None:
         draft["category_id"] = category.id
         draft["category_name"] = category.name

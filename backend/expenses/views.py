@@ -357,7 +357,11 @@ class TransactionViewSet(
         transaction.save(update_fields=["category"])
 
         if category is not None:
-            keyword = extract_merchant_keyword(transaction.description)
+            # Prefer location over description as the keyword source - same
+            # reasoning as TransactionCreateSerializer.create(): location is
+            # the actual merchant name when one's been recorded, description
+            # is only guaranteed to contain it for import-sourced rows.
+            keyword = extract_merchant_keyword(transaction.location or transaction.description)
             if keyword:
                 MerchantRule.objects.update_or_create(keyword=keyword, defaults={"category": category})
 
