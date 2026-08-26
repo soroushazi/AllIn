@@ -62,9 +62,13 @@ export default function Overview() {
   // by category, a budget comparison across categories, or an income
   // comparison against only-that-category spending don't mean anything.
   const isCategoryFiltered = categoryId !== ''
+  // A min/max amount filter narrows to a subset of transactions by size, not
+  // by category - a budget or income comparison against that subset doesn't
+  // mean anything either, same reasoning as isCategoryFiltered above.
+  const isAmountFiltered = amountMin !== '' || amountMax !== ''
 
   useEffect(() => {
-    if (!isMonthlyPeriod || isCategoryFiltered) {
+    if (!isMonthlyPeriod || isCategoryFiltered || isAmountFiltered) {
       setIncomes([])
       return
     }
@@ -72,7 +76,7 @@ export default function Overview() {
       .list({ owner, date_from: toISO(rangeStart), date_to: toISO(rangeEnd) })
       .then(setIncomes)
       .catch((err) => setError(err.message))
-  }, [owner, rangeStart, rangeEnd, isMonthlyPeriod, isCategoryFiltered])
+  }, [owner, rangeStart, rangeEnd, isMonthlyPeriod, isCategoryFiltered, isAmountFiltered])
 
   const categoryById = useMemo(() => Object.fromEntries(categories.map((c) => [c.id, c])), [categories])
 
@@ -300,7 +304,7 @@ export default function Overview() {
         </div>
       )}
 
-      {!isCashInOnly && !isCategoryFiltered && isMonthlyPeriod && budgetVsActual.length > 0 && (
+      {!isCashInOnly && !isCategoryFiltered && !isAmountFiltered && isMonthlyPeriod && budgetVsActual.length > 0 && (
         <div className="card">
           <div className="muted small" style={{ marginBottom: 8 }}>
             Budget vs actual
@@ -330,7 +334,7 @@ export default function Overview() {
         </div>
       )}
 
-      {!isCashInOnly && !isCategoryFiltered && isMonthlyPeriod && (
+      {!isCashInOnly && !isCategoryFiltered && !isAmountFiltered && isMonthlyPeriod && (
         <div className="card">
           <div className="muted small" style={{ marginBottom: 8 }}>
             Income vs spending
