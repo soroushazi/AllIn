@@ -1901,6 +1901,84 @@ time Ollama is running, but the resolution-priority logic itself - the part
 that actually changed today - is fully covered by the mocked-response tests
 above.
 
+#### Import: LLM fallback maps unmatched bank categories onto existing categories — 2026-08-27
+
+User's ask: bank exports' own category labels ("Merchandise-Grocery Stores",
+"Restaurant-Coffee Shop") rarely match one of our 15 curated categories
+exactly, so every mismatch was falling straight to the "(new)" bank-label
+suggestion (or uncategorized with no label at all) - even when the row
+obviously belongs to a category we already have. Extended the same
+LLM-assisted-categorization idea already built for voice (2026-08-26's
+`category_stated`/`category_guess` split) to the import pipeline: before
+offering a raw bank label as a new-category suggestion, give the self-hosted
+Ollama model a shot at mapping the row into one of our EXISTING categories
+using every signal the row has (description, amount, bank's own label if
+any) - only falling back to the old "(new)"/uncategorized behavior if the
+LLM also can't find a confident match.
+
+**`resolve_categories_via_llm(rows)`** (`services.py`) - takes a list of
+`{description, amount, category_label}` dicts and returns a same-length list
+of `Category`-or-`None`. **Batched into one Ollama call for the whole
+list**, not one call per row - a real import can have dozens of new rows,
+and a CPU-only call measured ~20s even warm (per the 2026-08-19/08-26 voice
+notes), so one-per-row would turn a weekly import into minutes. The prompt
+gives the model the full list of existing category names and asks it to
+pick one per transaction or `null` if not confident - explicitly told never
+to invent a name outside that list. Same fail-closed spirit as
+`resolve_card`/`parse_voice_transcript`: any failure (Ollama unreachable,
+malformed JSON, a response whose length doesn't match the request, phi3
+occasionally wrapping the array in an object - unwrapped defensively rather
+than treated as a hard failure) returns all-`None`, never raises, and never
+partially trusts a shape it doesn't fully understand.
+
+**Wired into `import_transactions()`'s pending-rows loop**: resolution
+order is now MerchantRule match → exact bank-label match (both unchanged,
+free/instant, no LLM involved) → **LLM match against existing categories**
+(new) → bank label as a "(new)" suggestion, or uncategorized if there's no
+label either (unchanged fallback). Only rows that fail the first two checks
+get sent to the LLM, and only as one batch after the whole file's rows are
+collected - most real imports (recurring merchants already covered by
+MerchantRule) trigger zero LLM calls. Each pending row gained
+`category_source` (`null` normally, `"ai_match"` when the LLM resolved it) -
+`Import.jsx`'s review list shows a small "AI-suggested category... double
+check before approving" note under any row flagged that way, since Key
+principle 1 (draft-before-commit) means this is still just a prefilled
+suggestion in the same editable review step as everything else, not an
+auto-commit. No other frontend changes needed - an AI-resolved `category_id`
+behaves exactly like a MerchantRule-resolved one in the existing review UI
+(pre-selected in the real dropdown, editable/overridable before approving).
+
+**Deliberately left untouched**: the separate duplicate-backfill path (an
+already-imported row missing a category getting backfilled from a freshly-
+learned rule or newly-mapped category column) still only tries MerchantRule
++ exact label match, no LLM - that path runs synchronously on every import
+including routine re-uploads of an already-fully-imported file, and adding
+a blocking LLM call there would tax the common case for a rare gap-filling
+edge case. Can be extended the same way later if it turns out to matter.
+
+Verified end-to-end via a throwaway user/card/categories with Ollama's
+`requests.post` call mocked (no live Ollama instance running in this
+environment): (1) a batch of 3 new rows with the model returning confident
+matches for 2 and `null` for the third - confirmed the 2 got `category_id`/
+`category_name` set to the right existing category with `category_source:
+"ai_match"` and no leftover `category_label`, and the third correctly
+stayed fully uncategorized (it had no bank label at all, so nothing to
+fall back to); (2) the same batch with `requests.post` raising a connection
+error - confirmed it falls back cleanly to the pre-existing bank-label-
+suggestion/uncategorized behavior with no crash; (3) a row whose bank label
+exactly matches an already-existing category - confirmed it resolves
+immediately without being included in the LLM batch at all, proving the
+free/instant checks still short-circuit before any LLM call. `python
+manage.py check`, `npm run build`, `npm run lint` all clean; real data
+(currently 0 of everything locally, per the 2026-08-25 incident note - real
+data now lives solely on the Oracle deploy) confirmed unaffected throughout.
+**Not yet verified against a live Ollama/phi3 instance** - no Ollama
+container was running in this environment; the resolution-priority logic
+and fail-closed behavior are fully covered by the mocked tests above, but a
+real-file sanity check (does phi3 actually pick sensible categories, not
+just handle the plumbing correctly) is worth doing next time Ollama is up,
+same caveat as the 2026-08-26 voice note.
+
 ### Phase 2 — Voice capture
 - [x] `MediaRecorder` audio capture in the PWA
 - [x] Upload endpoint + self-hosted Whisper/`faster-whisper` for transcription

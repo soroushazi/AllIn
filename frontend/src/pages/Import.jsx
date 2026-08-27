@@ -633,6 +633,9 @@ function ImportStatement() {
                     ${Number(row.amount).toFixed(2)}
                   </div>
                 </div>
+                {row.category_source === 'ai_match' && (
+                  <p className="muted small">AI-suggested category based on the transaction details - double check before approving.</p>
+                )}
               </li>
             ))}
           </ul>

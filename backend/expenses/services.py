@@ -146,6 +146,88 @@ def find_category_by_label(label):
     return Category.objects.filter(name__iexact=label).first()
 
 
+def resolve_categories_via_llm(rows):
+    """Given [{"description", "amount", "category_label"}, ...] for import rows
+    that matched no MerchantRule and no exact bank-category-label, ask the
+    self-hosted Ollama model to map each one to one of our EXISTING categories
+    using every available signal (description, bank's own label if any,
+    amount) - same idea as parse_voice_transcript's category_guess, but for
+    import rows instead of a voice transcript.
+
+    Batched into a single call for the whole list rather than one call per
+    row: a real import can have dozens of new rows, and each CPU-only Ollama
+    call measured ~20s even warm (see parse_voice_transcript) - one call per
+    row would make a weekly import take minutes instead of seconds.
+
+    Returns a list of Category-or-None, same length/order as `rows`. Never
+    invents a category name that isn't already one of ours, and never raises
+    - any failure (unreachable Ollama, malformed JSON, a response that isn't
+    the same length as the request) just returns all-None so the caller falls
+    back to its existing bank-label-suggestion/uncategorized behavior, same
+    fail-closed spirit as resolve_card/parse_voice_transcript.
+    """
+    if not rows:
+        return []
+
+    categories = list(Category.objects.order_by("name"))
+    if not categories:
+        return [None] * len(rows)
+    category_names = [c.name for c in categories]
+
+    lines = []
+    for i, r in enumerate(rows):
+        label_part = f', bank category: "{r["category_label"]}"' if r.get("category_label") else ""
+        lines.append(f'{i + 1}. description: "{r["description"]}", amount: {r["amount"]}{label_part}')
+
+    prompt = (
+        "You are matching household expense transactions to an existing list "
+        f"of budget categories: {category_names}\n\n"
+        "For each numbered transaction below, decide which ONE existing "
+        "category (from the list above, exactly as spelled) it clearly "
+        "belongs to, using its description, amount, and bank-provided "
+        "category label (if given) as clues. Only pick a category if you're "
+        "confident it's a real match - otherwise use null. Never invent a "
+        "category name that isn't already in the list above.\n\n"
+        "Respond with only a JSON array, no other text, no markdown, with "
+        f"exactly {len(rows)} objects in the same order as the transactions "
+        'below, each of the shape {"category": <exact existing category '
+        "name, or null>}.\n\n"
+        "Transactions:\n" + "\n".join(lines)
+    )
+
+    ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
+    model = os.environ.get("OLLAMA_MODEL", "phi3")
+    try:
+        # A batch of transactions makes for a longer prompt/response than the
+        # single-transcript voice call, so this gets a longer timeout - still
+        # one call for the whole batch, never one per row.
+        response = requests.post(
+            f"{ollama_url}/api/generate",
+            json={"model": model, "prompt": prompt, "format": "json", "stream": False},
+            timeout=180,
+        )
+        response.raise_for_status()
+        parsed = json.loads(response.json()["response"])
+    except (requests.RequestException, ValueError, KeyError):
+        return [None] * len(rows)
+
+    if isinstance(parsed, dict):
+        # phi3 occasionally wraps the array in an object (e.g. {"results":
+        # [...]}) despite the prompt asking for a bare array - unwrap the
+        # first list value found rather than failing closed on a technicality.
+        parsed = next((v for v in parsed.values() if isinstance(v, list)), None)
+
+    if not isinstance(parsed, list) or len(parsed) != len(rows):
+        return [None] * len(rows)
+
+    categories_by_name = {c.name.lower(): c for c in categories}
+    results = []
+    for entry in parsed:
+        name = entry.get("category") if isinstance(entry, dict) else None
+        results.append(categories_by_name.get(name.lower()) if name else None)
+    return results
+
+
 # --- Voice capture ----------------------------------------------------------
 
 _whisper_model = None
@@ -647,6 +729,7 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
     pending_transactions = []
     to_backfill = []
     duplicates = 0
+    needs_llm_indices = []
     for r in parsed_rows:
         existing = existing_transactions.get(r["dedupe_key"])
         if existing:
@@ -665,6 +748,8 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
             category = find_category_by_label(r["category_label"])
             if category is None:
                 category_label_for_row = r["category_label"]
+        if category is None:
+            needs_llm_indices.append(len(pending_transactions))
         pending_transactions.append(
             {
                 "key": r["dedupe_key"],
@@ -677,11 +762,38 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
                 "category_id": category.id if category else None,
                 "category_name": category.name if category else None,
                 "category_label": category_label_for_row,
+                "category_source": None,
             }
         )
 
     if to_backfill:
         Transaction.objects.bulk_update(to_backfill, ["category"])
+
+    # Neither a learned MerchantRule nor an exact match against the bank's own
+    # category label resolved these rows - before falling back to offering the
+    # bank label as a "(new)" category suggestion (or leaving it uncategorized
+    # if there's no label at all), give the LLM a shot at mapping the row into
+    # one of our EXISTING categories using every signal the row has. Only
+    # overrides the row when it finds a confident match; otherwise the
+    # pre-existing bank-label/uncategorized fallback (already set above)
+    # stands untouched. Batched into one call for the whole import, not one
+    # per row - see resolve_categories_via_llm.
+    if needs_llm_indices:
+        llm_rows = [
+            {
+                "description": pending_transactions[i]["description"],
+                "amount": pending_transactions[i]["amount"],
+                "category_label": pending_transactions[i]["category_label"],
+            }
+            for i in needs_llm_indices
+        ]
+        llm_results = resolve_categories_via_llm(llm_rows)
+        for i, category in zip(needs_llm_indices, llm_results):
+            if category is not None:
+                pending_transactions[i]["category_id"] = category.id
+                pending_transactions[i]["category_name"] = category.name
+                pending_transactions[i]["category_label"] = None
+                pending_transactions[i]["category_source"] = "ai_match"
 
     # Income has no dedupe_key like Transaction does - dedupe by
     # (owner, date, amount) so re-uploading the same file doesn't double-log
