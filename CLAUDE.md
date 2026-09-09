@@ -2113,6 +2113,26 @@ unrelated row, leaving the original manual entry untouched - confirmed via
 the ORM. All test data cleaned up afterward. `npm run build`/`npm run lint`
 and `python manage.py check` clean throughout.
 
+#### Overview: "Budget vs actual"/"Income vs spending" now show for Last month too — 2026-09-09, right after
+
+User noticed selecting "Last month" on Overview hid both cards, even though
+they're meant to show for any full-calendar-month selection (both compare
+against `Category.monthly_budget`, a fixed monthly figure - see the
+2026-08-15 "Overview content + Income tracking" note). Root cause:
+`isMonthlyPeriod` (`Overview.jsx`) only checked `dateFilter === 'mtd'` or a
+specific `month:` selection - `last_month` resolves to a full calendar month
+range too (`dateFilters.js: getDateRange()`'s `last_month` case), it was
+just missing from the condition. One-line fix: added
+`|| dateFilter === 'last_month'`.
+
+Verified via headless Playwright against a throwaway user/card/category
+(monthly_budget set)/income entries (deleted afterward): with the fix,
+MTD, Last month, and a specific past month (August 2026) all correctly show
+both cards; reverting the fix and re-testing confirmed Last month alone
+reproduces the bug (MTD/specific-month unaffected either way) - proving the
+one-line change is what matters. `npm run build`/`npm run lint` clean; real
+data (2 users, 4 transactions, 3 categories, 2 cards) confirmed unaffected.
+
 ### Phase 2 — Voice capture
 - [x] `MediaRecorder` audio capture in the PWA
 - [x] Upload endpoint + self-hosted Whisper/`faster-whisper` for transcription

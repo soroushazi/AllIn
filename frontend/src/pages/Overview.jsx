@@ -43,7 +43,7 @@ export default function Overview() {
     () => getDateRange(dateFilter, customStart, customEnd),
     [dateFilter, customStart, customEnd]
   )
-  const isMonthlyPeriod = dateFilter === 'mtd' || dateFilter.startsWith('month:')
+  const isMonthlyPeriod = dateFilter === 'mtd' || dateFilter === 'last_month' || dateFilter.startsWith('month:')
 
   // Picking a tag (e.g. a trip) jumps the date range to All time, since the
   // tagged transactions could fall anywhere - the user can still narrow the
