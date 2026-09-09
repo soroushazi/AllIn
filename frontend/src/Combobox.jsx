@@ -68,13 +68,22 @@ export function TagEditor({ tags, suggestions, onAdd, onRemove }) {
             setOpen(false)
           }
         }}
+        // Typing a tag and tapping Save/Done without pressing Enter first
+        // (easy to do, especially with a mobile keyboard) would otherwise
+        // leave it stuck in the draft and silently never added - commit
+        // whatever's typed as soon as the field loses focus too.
+        onBlur={commit}
         placeholder="Search or add a tag..."
       />
       {open && matches.length > 0 && (
         <ul className="combobox-menu">
           {matches.map((m) => (
             <li key={m}>
-              <button type="button" onClick={() => selectSuggestion(m)}>
+              {/* mousedown (not click) is what would otherwise blur the
+                  input first and let onBlur's commit() add the raw typed
+                  text before this selection runs - preventDefault here
+                  keeps focus on the input so only selectSuggestion fires. */}
+              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => selectSuggestion(m)}>
                 {m}
               </button>
             </li>

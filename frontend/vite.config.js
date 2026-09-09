@@ -5,6 +5,13 @@ import { VitePWA } from 'vite-plugin-pwa'
 export default defineConfig({
   server: {
     port: 5173,
+    // Fail loudly if 5173 is already taken instead of silently moving to
+    // 5174+ - the backend's CSRF/CORS trusted-origin list (settings.py) is
+    // hardcoded to port 5173, so a silent port bump breaks every PATCH/POST
+    // (session cookie still works, so GETs look fine) with no visible error
+    // beyond a CSRF 403 in the network tab - exactly the "can't save
+    // anything" symptom this caused once already in dev.
+    strictPort: true,
     // Bind to all interfaces, not just localhost - required for Codespaces/
     // container port forwarding to reach the dev server at all.
     host: true,
