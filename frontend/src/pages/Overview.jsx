@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, AreaChart, Area } from 'recharts'
 import { api } from '../api'
-import { useCategories, useUsers } from '../hooks'
+import { useCards, useCategories, useTags, useUsers } from '../hooks'
 import DateFilter from '../DateFilter'
 import { getDateRange, toISO } from '../dateFilters'
 
@@ -22,12 +22,16 @@ const UNCATEGORIZED_COLOR = '#8a8a86'
 
 export default function Overview() {
   const [categories] = useCategories()
+  const [cards] = useCards()
   const [users] = useUsers()
+  const [tags] = useTags()
   const [dateFilter, setDateFilter] = useState('mtd')
   const [customStart, setCustomStart] = useState('')
   const [customEnd, setCustomEnd] = useState('')
   const [owner, setOwner] = useState('')
+  const [cardId, setCardId] = useState('')
   const [categoryId, setCategoryId] = useState('')
+  const [tagId, setTagId] = useState('')
   const [direction, setDirection] = useState('out')
   const [amountMin, setAmountMin] = useState('')
   const [amountMax, setAmountMax] = useState('')
@@ -41,11 +45,20 @@ export default function Overview() {
   )
   const isMonthlyPeriod = dateFilter === 'mtd' || dateFilter.startsWith('month:')
 
+  // Picking a tag (e.g. a trip) jumps the date range to All time, since the
+  // tagged transactions could fall anywhere - the user can still narrow the
+  // range again afterward, this only fires when the tag itself changes.
+  useEffect(() => {
+    if (tagId !== '') setDateFilter('all_time')
+  }, [tagId])
+
   useEffect(() => {
     api.transactions
       .list({
         owner,
+        card: cardId,
         category: categoryId,
+        tag: tagId,
         direction,
         date_from: toISO(rangeStart),
         date_to: toISO(rangeEnd),
@@ -54,7 +67,7 @@ export default function Overview() {
       })
       .then(setTransactions)
       .catch((err) => setError(err.message))
-  }, [owner, categoryId, direction, amountMin, amountMax, rangeStart, rangeEnd])
+  }, [owner, cardId, categoryId, tagId, direction, amountMin, amountMax, rangeStart, rangeEnd])
 
   const isCashInOnly = direction === 'in'
   // "" is "All categories" - anything else (a real category id, or the
@@ -66,9 +79,18 @@ export default function Overview() {
   // by category - a budget or income comparison against that subset doesn't
   // mean anything either, same reasoning as isCategoryFiltered above.
   const isAmountFiltered = amountMin !== '' || amountMax !== ''
+  // A tag narrows to an arbitrary cross-category subset (e.g. a trip), same
+  // as an amount filter - a budget/income comparison against just that
+  // subset isn't meaningful either.
+  const isTagFiltered = tagId !== ''
+  // Same reasoning again: a single card is a slice of spending that cuts
+  // across categories (and a category's real monthly budget is meant to be
+  // judged against spending on every card, not just one), so budget/income
+  // comparisons don't mean anything scoped to one card either.
+  const isCardFiltered = cardId !== ''
 
   useEffect(() => {
-    if (!isMonthlyPeriod || isCategoryFiltered || isAmountFiltered) {
+    if (!isMonthlyPeriod || isCategoryFiltered || isAmountFiltered || isTagFiltered || isCardFiltered) {
       setIncomes([])
       return
     }
@@ -76,7 +98,7 @@ export default function Overview() {
       .list({ owner, date_from: toISO(rangeStart), date_to: toISO(rangeEnd) })
       .then(setIncomes)
       .catch((err) => setError(err.message))
-  }, [owner, rangeStart, rangeEnd, isMonthlyPeriod, isCategoryFiltered, isAmountFiltered])
+  }, [owner, rangeStart, rangeEnd, isMonthlyPeriod, isCategoryFiltered, isAmountFiltered, isTagFiltered, isCardFiltered])
 
   const categoryById = useMemo(() => Object.fromEntries(categories.map((c) => [c.id, c])), [categories])
 
@@ -195,12 +217,28 @@ export default function Overview() {
       </DateFilter>
 
       <div className="filter-row">
+        <select value={cardId} onChange={(e) => setCardId(e.target.value)}>
+          <option value="">All cards</option>
+          {cards.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.owner[0].toUpperCase() + c.owner.slice(1)} - {c.name}
+            </option>
+          ))}
+        </select>
         <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
           <option value="">All categories</option>
           <option value="uncategorized">Uncategorized</option>
           {categories.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
+            </option>
+          ))}
+        </select>
+        <select value={tagId} onChange={(e) => setTagId(e.target.value)}>
+          <option value="">All tags</option>
+          {tags.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
             </option>
           ))}
         </select>
@@ -304,7 +342,7 @@ export default function Overview() {
         </div>
       )}
 
-      {!isCashInOnly && !isCategoryFiltered && !isAmountFiltered && isMonthlyPeriod && budgetVsActual.length > 0 && (
+      {!isCashInOnly && !isCategoryFiltered && !isAmountFiltered && !isTagFiltered && !isCardFiltered && isMonthlyPeriod && budgetVsActual.length > 0 && (
         <div className="card">
           <div className="muted small" style={{ marginBottom: 8 }}>
             Budget vs actual
@@ -334,7 +372,7 @@ export default function Overview() {
         </div>
       )}
 
-      {!isCashInOnly && !isCategoryFiltered && !isAmountFiltered && isMonthlyPeriod && (
+      {!isCashInOnly && !isCategoryFiltered && !isAmountFiltered && !isTagFiltered && !isCardFiltered && isMonthlyPeriod && (
         <div className="card">
           <div className="muted small" style={{ marginBottom: 8 }}>
             Income vs spending

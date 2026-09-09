@@ -22,6 +22,7 @@ export default function DateFilter({
           <option value="ytd">Year to date</option>
           <option value="last_month">Last month</option>
           <option value="last_year">Last year</option>
+          <option value="all_time">All time</option>
           <optgroup label="Specific month">
             {monthOptions.map((m) => (
               <option key={m.value} value={m.value}>

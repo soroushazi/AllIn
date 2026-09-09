@@ -44,6 +44,10 @@ export function getDateRange(dateFilter, customStart, customEnd) {
   }
 
   switch (dateFilter) {
+    // No real "since forever" concept - this app's data can't predate its
+    // own existence, so a fixed early date stands in for "everything".
+    case 'all_time':
+      return [new Date(2000, 0, 1), today]
     case 'last_week': {
       const dayIndex = (today.getDay() + 6) % 7 // Monday = 0 ... Sunday = 6
       const thisWeekStart = new Date(today)
