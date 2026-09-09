@@ -94,6 +94,13 @@ Why these choices, so they don't get re-litigated:
   "Manual add + duplicate finder" status note for how this differs from a
   bulk import (no exact description to dedupe against, so it warns on a
   same-card/date/amount match instead of silently skipping or allowing).
+  Import review also runs the same idea in reverse: each new pending row is
+  checked against existing `source="manual"`/`"voice"` transactions on
+  card+date+amount+category (not description, since a hand-typed/spoken
+  entry won't share the bank's exact wording), and flagged rows carry a
+  `possible_duplicate` the user removes or approves per-row during review -
+  see the 2026-09-09 "Import: flag duplicates of manual/voice entries"
+  status note.
 - **Tag** — name (unique, case-insensitive). Free-form labels a user attaches
   to transactions (e.g. a trip name) so spending under that label can be
   found again later - shared across both users, created implicitly the
@@ -157,7 +164,14 @@ Why these choices, so they don't get re-litigated:
    amount). For a manually-typed or voice-parsed entry there's no exact bank
    description to key off of, so instead of silently skipping (import's
    behavior) or silently allowing a likely double-entry, warn once on a
-   same-card/date/amount match and let the user confirm "add anyway."
+   same-card/date/amount match and let the user confirm "add anyway." The
+   reverse direction matters too: when a manual/voice entry gets recorded
+   *before* its statement arrives, the eventual import row will have a
+   different (bank-written) description, so the exact key above won't catch
+   it - the import review step separately flags a match on
+   card/date/amount/category against existing manual/voice transactions, and
+   the user removes or approves it per row (see the 2026-09-09 "Import: flag
+   duplicates of manual/voice entries" status note).
 3. **Learn from corrections.** Every manual category correction should update the
    merchant-rule table so the same merchant auto-categorizes next time, for both
    users.
@@ -1978,6 +1992,126 @@ and fail-closed behavior are fully covered by the mocked tests above, but a
 real-file sanity check (does phi3 actually pick sensible categories, not
 just handle the plumbing correctly) is worth doing next time Ollama is up,
 same caveat as the 2026-08-26 voice note.
+
+#### Tags: fixed a silent-drop save bug; Overview gets tag/card filters + an "All time" auto-jump — 2026-09-09
+
+User reported tags couldn't be added/edited at all on the real Oracle deploy,
+which cascaded into "can't filter by tags either" (nothing to filter by if
+none can ever be saved). Root-caused by reproducing the exact edit flow
+against a real backend + real browser (Playwright) rather than guessing: the
+backend (`TransactionSerializer`, `TagViewSet`, the `tag` query param) was
+completely correct end-to-end - the bug was in `TagEditor`
+(`frontend/src/Combobox.jsx`), shared by the Transactions Edit dialog and
+`AddTransactionForm`. It only committed a typed tag into the chip list on
+Enter/comma; tapping **Save** directly after typing (easy to do, especially
+on a phone keyboard) left the text stranded in the input's own `draft`
+state, and the save request went through successfully with an empty tag
+list - no error anywhere, so it looked exactly like "tags never get added."
+**Fix:** `TagEditor`'s input now also commits its draft `onBlur`, with the
+standard combobox guard (`onMouseDown` + `preventDefault` on suggestion
+buttons) so clicking an autocomplete suggestion still works correctly
+instead of the blur firing first and committing the raw typed text. Verified
+both paths against a real backend/browser: typing a tag and tapping Save
+without pressing Enter now saves it correctly; clicking a suggestion from
+the dropdown still adds exactly that tag, no interference.
+
+Separately hardened `frontend/vite.config.js` with `strictPort: true` - while
+investigating, a stray leftover dev-server process in the Codespace had
+forced a fresh `npm run dev` onto the wrong port, which silently breaks
+every PATCH/POST via a CSRF origin mismatch (GETs still work fine, since the
+session cookie is unaffected) since `settings.py`'s CORS/CSRF trusted-origin
+list is hardcoded to port 5173. Not the actual bug the user hit (that was
+confirmed to be live on Oracle, not this Codespace), but a real footgun this
+exposed - `strictPort` makes vite fail loudly instead of silently drifting
+to another port.
+
+Once tags worked, added the requested Overview filtering to match
+Transactions:
+- **Tag filter** - same `useTags`/tag-id `<select>` pattern as Transactions,
+  wired into `api.transactions.list({ tag: tagId, ... })`. Selecting a tag
+  narrows every card the same way the existing category/amount filters do.
+- **Card filter** - same `useCards`/card-id `<select>` pattern as
+  Transactions, so spending can be viewed per-card (and per-category within
+  that card, via the existing "By category" list) - the user's literal ask.
+- Both **"Budget vs actual" and "Income vs spending" now also hide** when a
+  tag or card filter is active, joining the existing `isCategoryFiltered`/
+  `isAmountFiltered` gates - a single tag or a single card is an arbitrary
+  slice that cuts across categories (a category's real monthly budget is
+  meant to be judged against spending on every card, not just one), so those
+  two comparisons don't mean anything scoped that narrowly. "By category" and
+  "Spend trend" stay visible under both filters, same as under the amount
+  filter.
+- **New "All time" date-range option** (`dateFilters.js`/`DateFilter.jsx`,
+  shared by Overview and Transactions) - a fixed 2000-01-01-to-today range,
+  since this app has no real "since forever" concept otherwise. On Overview
+  specifically, **selecting a tag jumps the date filter to All time**
+  automatically (a `useEffect` keyed on `tagId` alone, so it only fires when
+  the tag selection itself changes, not on every render) - the reasoning
+  being a tag like a trip name could span any date range, so defaulting to
+  the currently-selected range (often Month to date) would silently hide
+  most of what the tag actually covers. The user can freely switch the date
+  range again afterward without it snapping back; switching to a *different*
+  tag re-triggers the jump (that tag could span different dates too);
+  clearing the tag filter doesn't force any date change.
+
+Verified all of the above end-to-end against a real backend + real browser
+with throwaway local-dev data (this Codespace's local DB has been empty
+since the 2026-08-25 incident - real household data lives solely on Oracle):
+tag filter narrowing total spent/transaction count/category breakdown
+correctly; card filter narrowing the same way, confirmed with a synthetic
+second card; the All-time auto-jump firing on tag select, sticking after a
+manual override, re-firing on a different tag, and not firing on clear, all
+confirmed via direct `select.input_value()` reads at each step; Budget vs
+actual/Income vs spending confirmed hidden under both new filters. `npm run
+build`/`npm run lint` clean throughout.
+
+#### Import: flag duplicates of manual/voice entries — 2026-09-09, right after
+
+User's ask: if a transaction was already logged by hand or by voice before
+its statement arrives, the eventual bulk import of that same real-world
+purchase needs to be caught too - the existing exact dedupe key (owner,
+card, date, description, amount) can't catch it, since a hand-typed/spoken
+description ("cookies") won't match the bank's own wording ("WALMART
+SUPERCENTER #1234"). Requested match signals: card, amount, date, category.
+
+Implemented in `import_transactions()` (`services.py`), as an additional
+pass over the pending-rows batch, run *after* category resolution (including
+the LLM fallback) so it compares against each row's final resolved category,
+not an intermediate guess: for every genuinely-new row (already past the
+exact-key dedupe check), look up existing `source="manual"`/`"voice"`
+transactions sharing the same card, date, amount, and category (including
+both being uncategorized/`None`) - one batched query per import, not one per
+row. A match sets `possible_duplicate` on the pending row (matched
+transaction's id/description/date/amount/source). Deliberately only checked
+against manual/voice source, never against other import rows (those already
+dedupe via the exact key).
+
+`Import.jsx`'s review step (same "editable draft, explicit approve before
+commit" screen as the bank-label-category review) now shows a flagged row's
+warning inline - *"Possible duplicate of a manual entry: '\<description>' for
+$X on \<date> - same card, date, amount, and category. Already recorded
+there?"* - with a **Remove / Approve anyway** toggle (`.user-toggle`, same
+component as the Login screen's person picker), defaulting to **Remove**
+per Key principle 1 (never silently auto-commit) - creating a false
+duplicate transaction is worse than requiring one extra tap to keep a
+genuine coincidence. The "Approve & import N" button's count reflects
+exactly what will be sent - flagged-and-left-as-Remove rows are filtered out
+client-side before `POST /api/import/confirm/`, no backend change needed
+for that half.
+
+Verified end-to-end with throwaway local-dev data: (1) direct
+`import_transactions()` call - a manual "cookies" entry ($25, Groceries,
+9/10) correctly flagged an incoming "WALMART SUPERCENTER" row (same
+date/amount, resolved to Groceries via a test MerchantRule) as a possible
+duplicate, while an unrelated $99 row on a different date stayed unflagged;
+(2) full browser round-trip via Playwright - review screen rendered the
+warning + toggle correctly (screenshot reviewed), default state excluded the
+flagged row (button read "Approve & import 1"), clicking "Approve anyway"
+correctly bumped it to "Approve & import 2", and the final commit created
+both the flagged row (as a real `source="import"` transaction) and the
+unrelated row, leaving the original manual entry untouched - confirmed via
+the ORM. All test data cleaned up afterward. `npm run build`/`npm run lint`
+and `python manage.py check` clean throughout.
 
 ### Phase 2 — Voice capture
 - [x] `MediaRecorder` audio capture in the PWA
