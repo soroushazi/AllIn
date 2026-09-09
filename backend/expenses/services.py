@@ -727,6 +727,8 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
     # immediately - low-risk, since it only ever fills a gap, never creates
     # or changes an actual transaction.
     pending_transactions = []
+    pending_raw = []  # (card_id, date, amount) aligned by index to pending_transactions - kept out of
+    # the dict itself since it's only needed internally for the manual/voice duplicate check below.
     to_backfill = []
     duplicates = 0
     needs_llm_indices = []
@@ -763,8 +765,10 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
                 "category_name": category.name if category else None,
                 "category_label": category_label_for_row,
                 "category_source": None,
+                "possible_duplicate": None,
             }
         )
+        pending_raw.append((r["card"].id, r["date"], r["amount"]))
 
     if to_backfill:
         Transaction.objects.bulk_update(to_backfill, ["category"])
@@ -794,6 +798,34 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
                 pending_transactions[i]["category_name"] = category.name
                 pending_transactions[i]["category_label"] = None
                 pending_transactions[i]["category_source"] = "ai_match"
+
+    # A voice note or a hand-typed manual entry has no exact bank description
+    # to key off of (that's the whole reason the dedupe_key above won't catch
+    # it), but it does carry a real card/date/amount/category once entered -
+    # so a later statement import of the same real-world purchase is flagged
+    # by matching on those four fields instead, and surfaced in the review
+    # step for the user to remove (skip - it's already recorded) or approve
+    # (keep - a genuine coincidence) rather than silently double-counting it.
+    # Only checked against source=manual/voice, never against other import
+    # rows - those already dedupe via the exact description-based key above.
+    if pending_transactions:
+        card_ids = {card_id for card_id, _, _ in pending_raw}
+        dates = {row_date for _, row_date, _ in pending_raw}
+        manual_voice_by_key = {}
+        for t in Transaction.objects.filter(
+            card_id__in=card_ids, date__in=dates, source__in=[Transaction.Source.MANUAL, Transaction.Source.VOICE]
+        ):
+            manual_voice_by_key.setdefault((t.card_id, t.date, t.amount, t.category_id), t)
+        for i, (card_id, row_date, row_amount) in enumerate(pending_raw):
+            match = manual_voice_by_key.get((card_id, row_date, row_amount, pending_transactions[i]["category_id"]))
+            if match is not None:
+                pending_transactions[i]["possible_duplicate"] = {
+                    "id": match.id,
+                    "description": match.description,
+                    "date": str(match.date),
+                    "amount": str(match.amount),
+                    "source": match.source,
+                }
 
     # Income has no dedupe_key like Transaction does - dedupe by
     # (owner, date, amount) so re-uploading the same file doesn't double-log

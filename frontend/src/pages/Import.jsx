@@ -213,6 +213,11 @@ function draftFromPendingRow(row) {
   return {
     ...row,
     selectedCategoryId: row.category_id ? String(row.category_id) : row.category_label ? '__new__' : '',
+    // Flagged rows default to "Remove" (excluded from the import) - the
+    // whole point of flagging is to avoid silently double-counting spending
+    // that's already been recorded by hand or by voice, so the safer
+    // default is to leave it out unless the user explicitly says otherwise.
+    includeDespiteDuplicate: false,
   }
 }
 
@@ -300,21 +305,27 @@ function ImportStatement() {
     setCommitting(true)
     setError(null)
     try {
-      const rows = pendingTransactions.map((r) => {
-        const row = {
-          date: r.date,
-          original_description: r.original_description,
-          description: r.description,
-          amount: r.amount,
-          card_id: r.card_id,
-        }
-        if (r.selectedCategoryId === '__new__') {
-          row.category_label = r.category_label
-        } else if (r.selectedCategoryId) {
-          row.category_id = r.selectedCategoryId
-        }
-        return row
-      })
+      // Rows flagged as a possible duplicate of an existing manual/voice
+      // entry are left out entirely unless the user explicitly chose to
+      // include them anyway - same "never silently auto-commit" spirit as
+      // the rest of this review step, just applied per-row.
+      const rows = pendingTransactions
+        .filter((r) => !r.possible_duplicate || r.includeDespiteDuplicate)
+        .map((r) => {
+          const row = {
+            date: r.date,
+            original_description: r.original_description,
+            description: r.description,
+            amount: r.amount,
+            card_id: r.card_id,
+          }
+          if (r.selectedCategoryId === '__new__') {
+            row.category_label = r.category_label
+          } else if (r.selectedCategoryId) {
+            row.category_id = r.selectedCategoryId
+          }
+          return row
+        })
       const commitResult = await api.importConfirm(rows)
       setResult({
         ...previewMeta,
@@ -347,6 +358,9 @@ function ImportStatement() {
 
   const selectedCard = cards.find((c) => c.id === Number(cardId))
   const siblingCards = selectedCard ? cards.filter((c) => c.owner === selectedCard.owner && c.id !== selectedCard.id) : []
+  const importCount = pendingTransactions
+    ? pendingTransactions.filter((r) => !r.possible_duplicate || r.includeDespiteDuplicate).length
+    : 0
 
   return (
     <div className="stack">
@@ -636,6 +650,31 @@ function ImportStatement() {
                 {row.category_source === 'ai_match' && (
                   <p className="muted small">AI-suggested category based on the transaction details - double check before approving.</p>
                 )}
+                {row.possible_duplicate && (
+                  <div className="stack" style={{ gap: 6 }}>
+                    <p className="over-budget small">
+                      Possible duplicate of a {row.possible_duplicate.source} entry: "{row.possible_duplicate.description}
+                      " for ${Number(row.possible_duplicate.amount).toFixed(2)} on {row.possible_duplicate.date} - same
+                      card, date, amount, and category. Already recorded there?
+                    </p>
+                    <div className="user-toggle">
+                      <button
+                        type="button"
+                        className={!row.includeDespiteDuplicate ? 'active' : ''}
+                        onClick={() => updateDraftRow(row.key, { includeDespiteDuplicate: false })}
+                      >
+                        Remove
+                      </button>
+                      <button
+                        type="button"
+                        className={row.includeDespiteDuplicate ? 'active' : ''}
+                        onClick={() => updateDraftRow(row.key, { includeDespiteDuplicate: true })}
+                      >
+                        Approve anyway
+                      </button>
+                    </div>
+                  </div>
+                )}
               </li>
             ))}
           </ul>
@@ -643,7 +682,7 @@ function ImportStatement() {
           {error && <div className="error-text">{error}</div>}
 
           <button type="button" className="primary" onClick={handleApprove} disabled={committing}>
-            {committing ? 'Importing...' : `Approve & import ${pendingTransactions.length}`}
+            {committing ? 'Importing...' : `Approve & import ${importCount}`}
           </button>
         </div>
       )}
