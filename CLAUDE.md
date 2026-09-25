@@ -2133,6 +2133,88 @@ reproduces the bug (MTD/specific-month unaffected either way) - proving the
 one-line change is what matters. `npm run build`/`npm run lint` clean; real
 data (2 users, 4 transactions, 3 categories, 2 cards) confirmed unaffected.
 
+#### Prod 500 on larger imports: gunicorn worker timeout — 2026-09-25
+
+User reported real-deployment-only (not reproducible locally) "Internal
+Server Error" uploading a ~1-month statement in one go, but fine when split
+into weekly chunks - despite the file itself being tiny (9.6KB), so file
+size wasn't the variable. Root-caused from `docker-compose.prod.yml` and
+`services.py` directly (no Oracle SSH access from this environment, so
+without a real traceback this had to be reasoned from the two configs, then
+confirmed via `gunicorn --help`, not guessed): gunicorn's default worker
+timeout is 30s, but `docker-compose.prod.yml`'s gunicorn command never set
+`--timeout`, while `resolve_categories_via_llm()` (the import pipeline's
+batched Ollama category-resolution call, `services.py`) is allowed up to
+180s. A larger import has more never-before-seen merchants in one batch, so
+the LLM call can genuinely run past 30s - gunicorn was silently killing the
+worker mid-request, surfacing as a bare 500 with no detail (`DEBUG=false`
+in prod). Chunking into weekly files keeps each request's new-merchant
+count (and thus the LLM call) short enough to usually land under 30s,
+matching the reported symptom exactly. Never reproduces locally since dev
+uses `runserver`, which has no such timeout.
+
+Fix: added `--timeout 200` to the gunicorn command in
+`docker-compose.prod.yml` (headroom over both that 180s call and voice
+capture's 90s Ollama call, which run on the same workers). Verified the
+compose file still validates (`docker compose config`) and that
+`--timeout` is a real gunicorn flag whose documented default really is 30.
+**Not yet confirmed fixed on the real Oracle box** (no SSH access from this
+environment) - needs `git pull` + `docker compose -f
+docker-compose.prod.yml up -d --build backend` there, then a retry of the
+failing upload.
+
+#### Transactions: multi-select bulk edit (category, add-tag, delete) — 2026-09-25, right after
+
+User's ask: select multiple transactions on the Transactions screen and
+apply a change to all of them at once - specifically category, adding a
+tag, or deleting. Built as a checkbox on each row + a "select all" toggle
+that turns into a small action bar (Edit selected / Delete selected /
+Clear) once at least one row is selected - reuses the existing
+`EditTransactionDialog`/`ConfirmDialog` pattern (explicit save/confirm, no
+on-the-fly edits) rather than inline auto-apply selects, matching this
+app's established convention (see the 2026-08-16 "Delete confirm dialog"
+and "Notes/location/tags" notes on why on-the-fly edits were deliberately
+moved away from).
+
+**Backend** (`TransactionViewSet`, two new list-level `@action` routes,
+confirmed via `resolve()` not to collide with the existing
+`/transactions/<pk>/` detail route): `POST /api/transactions/bulk-update/`
+takes `ids` + optional `category` (applied to every row, teaches a
+`MerchantRule` per row's own merchant - same mechanism as the existing
+single-row `recategorize()`, just looped) + optional `add_tags` (additive
+via `tags.add()`, deliberately never `tags.set()` - a bulk selection
+usually mixes rows that already carry different tags of their own, so
+"add a tag to these" must not silently wipe what's already there, unlike
+the single-transaction Edit dialog which shows and can replace one row's
+full tag list). `POST /api/transactions/bulk-delete/` takes `ids`, plain
+bulk delete.
+
+**Frontend**: new `BulkEditDialog` (category `<select>` defaults to
+"Don't change", alongside "Uncategorized" and real categories - a
+three-state need the single-edit dialog doesn't have, since that one
+always shows one row's real current value and this one usually has no
+single shared value across a whole selection; tag-add reuses the existing
+`TagEditor` combobox) + `api.transactions.bulkUpdate`/`bulkRemove`.
+Selection clears automatically whenever the active filters change (a
+stale selected id no longer on screen would make "N selected" lie) but
+survives an unrelated `load()` call elsewhere (e.g. after adding a
+transaction).
+
+Verified end-to-end via headless Playwright against the real backend,
+light and dark mode, with throwaway transactions (deleted afterward,
+confirmed via the ORM): select-all/indeterminate checkbox state; the
+bulk-edit dialog applying a category + a new tag to 3 rows at once
+(screenshot + DOM read confirmed all 3 updated, selection cleared after);
+bulk delete removing exactly the 3 selected rows via its `ConfirmDialog`
+(dark-mode screenshot confirmed legible, not the red-on-red bug from the
+2026-08-16 note). Also verified directly via curl/ORM before touching the
+frontend: `MerchantRule` taught once per unique merchant in the batch,
+`tags.add()` genuinely additive across two separate bulk calls (second
+call kept the first call's tag), both endpoints 400 on a missing `ids`.
+`python manage.py check`, `npm run build`, `npm run lint` all clean; real
+data (2 users, 3 categories, 4 transactions) confirmed unaffected
+throughout.
+
 ### Phase 2 — Voice capture
 - [x] `MediaRecorder` audio capture in the PWA
 - [x] Upload endpoint + self-hosted Whisper/`faster-whisper` for transcription
