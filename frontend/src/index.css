@@ -393,6 +393,13 @@ button.primary:disabled {
 }
 
 .transaction-row {
+  display: flex;
+  align-items: flex-start;
+  /* Deliberately wider than the app's usual 8-10px gap - the checkbox is a
+     selection control, not part of the transaction's own content, so it
+     gets real visual separation from the card body rather than reading as
+     just another inline element next to the category dot. */
+  gap: 18px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -403,6 +410,11 @@ button.primary:disabled {
   border-color: var(--accent);
 }
 
+.transaction-content {
+  flex: 1;
+  min-width: 0;
+}
+
 .transaction-main {
   display: flex;
   align-items: center;
@@ -411,6 +423,9 @@ button.primary:disabled {
 
 .transaction-select {
   flex-shrink: 0;
+  /* Nudge down to align with the description's text baseline rather than
+     the top edge of the card. */
+  margin-top: 3px;
 }
 
 /* Group-edit bar above the transaction list (Transactions screen) - a
@@ -429,6 +444,10 @@ button.primary:disabled {
 
 .select-all-row {
   display: flex;
+  /* Override the global `label { flex-direction: column }` rule (every
+     other label in this app puts its text above the input) - here the
+     checkbox and "Select all"/"N selected" text belong on one line. */
+  flex-direction: row;
   align-items: center;
   gap: 8px;
   margin-right: auto;

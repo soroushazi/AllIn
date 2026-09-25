@@ -483,50 +483,53 @@ export default function Transactions() {
           const category = categoryById[t.category]
           return (
             <li key={t.id} className={`transaction-row${selectedIds.has(t.id) ? ' selected' : ''}`}>
-              {t.tags.length > 0 && (
-                <div className="transaction-tags">
-                  {t.tags.map((tag) => (
-                    <span key={tag} className="tag-pill">
-                      {tag}
-                    </span>
-                  ))}
+              <input
+                type="checkbox"
+                className="transaction-select"
+                checked={selectedIds.has(t.id)}
+                onChange={() => toggleSelect(t.id)}
+                aria-label={`Select ${t.description}`}
+              />
+
+              <div className="transaction-content">
+                {t.tags.length > 0 && (
+                  <div className="transaction-tags">
+                    {t.tags.map((tag) => (
+                      <span key={tag} className="tag-pill">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <div className="transaction-main">
+                  <span
+                    className="category-dot"
+                    style={{ background: category ? category.color : 'var(--surface-3)' }}
+                  />
+                  <div className="transaction-desc">{t.description}</div>
+                  <div className={`amount ${Number(t.amount) < 0 ? 'positive' : ''}`}>
+                    {Number(t.amount) < 0 ? '+' : ''}
+                    {Math.abs(Number(t.amount)).toFixed(2)}
+                  </div>
                 </div>
-              )}
 
-              <div className="transaction-main">
-                <input
-                  type="checkbox"
-                  className="transaction-select"
-                  checked={selectedIds.has(t.id)}
-                  onChange={() => toggleSelect(t.id)}
-                  aria-label={`Select ${t.description}`}
-                />
-                <span
-                  className="category-dot"
-                  style={{ background: category ? category.color : 'var(--surface-3)' }}
-                />
-                <div className="transaction-desc">{t.description}</div>
-                <div className={`amount ${Number(t.amount) < 0 ? 'positive' : ''}`}>
-                  {Number(t.amount) < 0 ? '+' : ''}
-                  {Math.abs(Number(t.amount)).toFixed(2)}
+                <div className="transaction-sub muted small">
+                  {t.date} · {category ? category.name : 'Uncategorized'}
                 </div>
-              </div>
+                <div className="transaction-sub muted small">
+                  {t.owner[0].toUpperCase() + t.owner.slice(1)} · {t.card_name}
+                </div>
+                {t.location && <div className="transaction-sub muted small">📍 {t.location}</div>}
 
-              <div className="transaction-sub muted small">
-                {t.date} · {category ? category.name : 'Uncategorized'}
-              </div>
-              <div className="transaction-sub muted small">
-                {t.owner[0].toUpperCase() + t.owner.slice(1)} · {t.card_name}
-              </div>
-              {t.location && <div className="transaction-sub muted small">📍 {t.location}</div>}
-
-              <div className="transaction-actions">
-                <button className="link-button" onClick={() => setEditingTransaction(t)}>
-                  Edit
-                </button>
-                <button className="link-button danger" onClick={() => setPendingDelete(t)}>
-                  Delete
-                </button>
+                <div className="transaction-actions">
+                  <button className="link-button" onClick={() => setEditingTransaction(t)}>
+                    Edit
+                  </button>
+                  <button className="link-button danger" onClick={() => setPendingDelete(t)}>
+                    Delete
+                  </button>
+                </div>
               </div>
             </li>
           )
