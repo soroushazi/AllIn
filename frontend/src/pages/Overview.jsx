@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, AreaChart, Area } from 'recharts'
+import { CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, AreaChart, Area, ReferenceLine } from 'recharts'
 import { api } from '../api'
 import { useCards, useCategories, useTags, useUsers } from '../hooks'
 import DateFilter from '../DateFilter'
@@ -70,6 +70,11 @@ export default function Overview() {
   }, [owner, cardId, categoryId, tagId, direction, amountMin, amountMax, rangeStart, rangeEnd])
 
   const isCashInOnly = direction === 'in'
+  // "" is the re-added "Cash in & out" option (see the direction <select>
+  // below) - both directions included at once, e.g. to see a trip tag's
+  // full picture when you paid upfront (cash out) and got reimbursed later
+  // (cash in).
+  const isCombined = direction === ''
   // "" is "All categories" - anything else (a real category id, or the
   // "uncategorized" sentinel) is a single-category view, where a breakdown
   // by category, a budget comparison across categories, or an income
@@ -185,7 +190,15 @@ export default function Overview() {
     let maxDate = null
     for (const t of transactions) {
       const amt = Number(t.amount)
-      if (amt <= 0) continue
+      // Sum the raw signed amount rather than filtering to spending only -
+      // this app already stores spending positive and refunds/cash-in
+      // negative (see the sign-convention notes throughout this file/repo),
+      // so for the "Cash in & out" direction the daily total naturally
+      // comes out exactly as wanted: cash out pushes it positive, cash in
+      // pushes it negative, no separate series needed. For "Cash out" the
+      // server already only returns amount > 0 rows (direction=out), so
+      // this is unchanged from before; "Cash in" never renders this chart
+      // (gated by !isCashInOnly below).
       totals[t.date] = (totals[t.date] || 0) + amt
       // t.date is an ISO "YYYY-MM-DD" string, so plain string comparison
       // sorts correctly - no need to parse into Date objects just to find
@@ -272,6 +285,7 @@ export default function Overview() {
         <select value={direction} onChange={(e) => setDirection(e.target.value)}>
           <option value="out">Cash out</option>
           <option value="in">Cash in</option>
+          <option value="">Cash in & out</option>
         </select>
         <input
           type="number"
@@ -290,12 +304,18 @@ export default function Overview() {
       {error && <div className="error-text">{error}</div>}
 
       <div className="filter-row">
-        <div className="card stat-tile" style={{ flex: 1 }}>
-          <div className="muted small">{isCashInOnly ? 'Total earned' : 'Total spent'}</div>
-          <div className={`stat-number ${isCashInOnly ? 'net-positive' : ''}`}>
-            ${(isCashInOnly ? totalEarned : totalSpent).toFixed(2)}
+        {!isCashInOnly && (
+          <div className="card stat-tile" style={{ flex: 1 }}>
+            <div className="muted small">Total spent</div>
+            <div className="stat-number">${totalSpent.toFixed(2)}</div>
           </div>
-        </div>
+        )}
+        {(isCashInOnly || isCombined) && (
+          <div className="card stat-tile" style={{ flex: 1 }}>
+            <div className="muted small">Total earned</div>
+            <div className="stat-number net-positive">${totalEarned.toFixed(2)}</div>
+          </div>
+        )}
         <div className="card stat-tile" style={{ flex: 1 }}>
           <div className="muted small">Transactions</div>
           <div className="stat-number">{transactions.length}</div>
@@ -312,9 +332,15 @@ export default function Overview() {
               <div key={u.id}>
                 <span className="legend-dot" style={{ background: SLOT_COLORS[i] }} />
                 {u.username[0].toUpperCase() + u.username.slice(1)}:{' '}
-                <strong>
-                  ${(isCashInOnly ? earnedByPersonTotals[u.username] : perPersonTotals[u.username]).toFixed(2)}
-                </strong>
+                {isCombined ? (
+                  <strong>
+                    ${perPersonTotals[u.username].toFixed(2)} out / ${earnedByPersonTotals[u.username].toFixed(2)} in
+                  </strong>
+                ) : (
+                  <strong>
+                    ${(isCashInOnly ? earnedByPersonTotals[u.username] : perPersonTotals[u.username]).toFixed(2)}
+                  </strong>
+                )}
               </div>
             ))}
           </div>
@@ -323,19 +349,35 @@ export default function Overview() {
 
       {!isCashInOnly && (
         <div className="card">
-          <div className="muted small" style={{ marginBottom: 8 }}>
-            Spend trend
+          <div className="muted small" style={{ marginBottom: isCombined ? 2 : 8 }}>
+            {isCombined ? 'Cash flow trend' : 'Spend trend'}
           </div>
-          <ResponsiveContainer width="100%" height={180}>
+          {isCombined && (
+            <div className="muted small" style={{ marginBottom: 8 }}>
+              Cash out shown above the line (+), cash in below it (−)
+            </div>
+          )}
+          <ResponsiveContainer width="100%" height={isCombined ? 260 : 180}>
             <AreaChart data={trend} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
               <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} axisLine={false} tickLine={false} width={40} />
+              <YAxis
+                tick={{ fontSize: 11, fill: 'var(--text-secondary)' }}
+                axisLine={false}
+                tickLine={false}
+                width={48}
+                tickFormatter={isCombined ? (v) => (v === 0 ? '$0' : `${v > 0 ? '+' : '-'}$${Math.abs(v)}`) : undefined}
+              />
+              {isCombined && <ReferenceLine y={0} stroke="var(--text-secondary)" />}
               <Tooltip
                 contentStyle={{ background: 'var(--surface-2)', border: '1px solid var(--border)', fontSize: 12 }}
                 itemStyle={{ color: 'var(--text-primary)' }}
                 labelStyle={{ color: 'var(--text-secondary)' }}
-                formatter={(value) => [`$${value.toFixed(2)}`, 'Spent']}
+                formatter={
+                  isCombined
+                    ? (value) => [`${value < 0 ? '-' : ''}$${Math.abs(value).toFixed(2)}`, value < 0 ? 'Cash in' : 'Cash out']
+                    : (value) => [`$${value.toFixed(2)}`, 'Spent']
+                }
               />
               <Area type="monotone" dataKey="value" stroke="var(--chart-line)" fill="var(--chart-line)" fillOpacity={0.15} strokeWidth={2} />
             </AreaChart>
