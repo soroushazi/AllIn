@@ -396,20 +396,12 @@ export default function Overview() {
               fill={isCashInOnly ? 'var(--accent)' : 'var(--chart-line)'}
               fillOpacity={0.15}
               strokeWidth={2}
-              // Cash in's own transition (unlike Cash out/Cash in & out,
-              // which the user confirmed already animate smoothly) reads as
-              // clumsy at Recharts' default ~1.5s: real cash-in events
-              // (reimbursements) are naturally far rarer than everyday
-              // spending, so its curve is sparser and spikier - a handful
-              // of sharp isolated values among mostly-zero days - and it's
-              // usually switched into from a very differently-scaled Cash
-              // out view, so the Y-axis also rescales at the same time.
-              // Both make the animated transition a bigger, more jarring
-              // jump than Cash out's denser, more continuous curve. A
-              // shorter duration resolves that same jump quickly instead of
-              // lingering on it, without touching the animation Cash out/
-              // Cash in & out already have (Recharts' default 1500ms).
-              animationDuration={isCashInOnly ? 300 : 1500}
+              // Same duration for all three direction modes (Recharts'
+              // default) - a shorter one was tried for Cash in alone
+              // (58eb90d) to counter its sparser/spikier curve, but the
+              // user asked for all three to match rather than have Cash in
+              // stand out as quicker than the other two.
+              animationDuration={1500}
             />
           </AreaChart>
         </ResponsiveContainer>
