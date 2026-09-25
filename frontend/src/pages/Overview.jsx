@@ -181,16 +181,36 @@ export default function Overview() {
 
   const trend = useMemo(() => {
     const totals = {}
+    let minDate = null
+    let maxDate = null
     for (const t of transactions) {
       const amt = Number(t.amount)
       if (amt <= 0) continue
       totals[t.date] = (totals[t.date] || 0) + amt
+      // t.date is an ISO "YYYY-MM-DD" string, so plain string comparison
+      // sorts correctly - no need to parse into Date objects just to find
+      // the earliest/latest.
+      if (minDate === null || t.date < minDate) minDate = t.date
+      if (maxDate === null || t.date > maxDate) maxDate = t.date
     }
-    return enumerateDates(rangeStart, rangeEnd).map((date) => ({
+    // "All time" resolves to 2000-01-01..today (~9,700 days) - enumerating
+    // every one of those as an x-axis point is both slow and visually
+    // useless: real spending (e.g. a tag like a trip, which jumps the date
+    // filter to All time since it could span any period - see the tagId
+    // effect above) gets compressed into an imperceptible sliver among
+    // thousands of empty days, which read as "the chart isn't showing my
+    // spending" even though the data's there. Scope the plotted range to
+    // just the span the matching transactions actually cover instead of
+    // the full selected range - every other date-filter option (week/
+    // month/year/custom) is already a reasonable width to show in full,
+    // gaps included, so this only changes All time's behavior.
+    const spanStart = dateFilter === 'all_time' && minDate ? new Date(minDate) : rangeStart
+    const spanEnd = dateFilter === 'all_time' && maxDate ? new Date(maxDate) : rangeEnd
+    return enumerateDates(spanStart, spanEnd).map((date) => ({
       date: date.slice(5), // MM-DD
       value: Number((totals[date] || 0).toFixed(2)),
     }))
-  }, [transactions, rangeStart, rangeEnd])
+  }, [transactions, rangeStart, rangeEnd, dateFilter])
 
   return (
     <div className="stack">
