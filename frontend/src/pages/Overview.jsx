@@ -396,16 +396,20 @@ export default function Overview() {
               fill={isCashInOnly ? 'var(--accent)' : 'var(--chart-line)'}
               fillOpacity={0.15}
               strokeWidth={2}
-              // Recharts animates the curve morphing from its previous
-              // shape to the new one on every data change by default
-              // (~1.5s) - every filter change (direction, date range, tag,
-              // ...) recomputes `trend` and re-triggers that transition,
-              // which reads as laggy/choppy rather than useful motion,
-              // especially for a sparser curve with sharp swings (reported
-              // on Cash in). The chart already updates the instant new data
-              // arrives; there's nothing the animation communicates that's
-              // worth the stutter.
-              isAnimationActive={false}
+              // Cash in's own transition (unlike Cash out/Cash in & out,
+              // which the user confirmed already animate smoothly) reads as
+              // clumsy at Recharts' default ~1.5s: real cash-in events
+              // (reimbursements) are naturally far rarer than everyday
+              // spending, so its curve is sparser and spikier - a handful
+              // of sharp isolated values among mostly-zero days - and it's
+              // usually switched into from a very differently-scaled Cash
+              // out view, so the Y-axis also rescales at the same time.
+              // Both make the animated transition a bigger, more jarring
+              // jump than Cash out's denser, more continuous curve. A
+              // shorter duration resolves that same jump quickly instead of
+              // lingering on it, without touching the animation Cash out/
+              // Cash in & out already have (Recharts' default 1500ms).
+              animationDuration={isCashInOnly ? 300 : 1500}
             />
           </AreaChart>
         </ResponsiveContainer>
