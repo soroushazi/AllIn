@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, AreaChart, Area, ReferenceLine } from 'recharts'
 import { api } from '../api'
 import { useCards, useCategories, useTags, useUsers } from '../hooks'
@@ -93,9 +93,22 @@ export default function Overview() {
   // judged against spending on every card, not just one), so budget/income
   // comparisons don't mean anything scoped to one card either.
   const isCardFiltered = cardId !== ''
+  // Income has no card/category/tag of its own, so it can't meaningfully
+  // satisfy a filter on any of those - fold it into "Cash in" only when
+  // none of them narrow the view. Amount is different: Income does have a
+  // real amount, so a min/max filter is applied to it too (client-side,
+  // below) rather than excluding it outright.
+  const cashInEligible = (isCashInOnly || isCombined) && !isCategoryFiltered && !isTagFiltered && !isCardFiltered
 
   useEffect(() => {
-    if (!isMonthlyPeriod || isCategoryFiltered || isAmountFiltered || isTagFiltered || isCardFiltered) {
+    // Two independent reasons to fetch income: the existing "Income vs
+    // spending" card (unchanged - full calendar month, no other filter),
+    // and folding income into the Cash in figures below (any period, as
+    // long as no category/tag/card filter excludes it - see cashInEligible
+    // above). Either one wanting it is enough to fetch once.
+    const incomeVsSpendingApplicable =
+      isMonthlyPeriod && !isCategoryFiltered && !isAmountFiltered && !isTagFiltered && !isCardFiltered
+    if (!incomeVsSpendingApplicable && !cashInEligible) {
       setIncomes([])
       return
     }
@@ -103,19 +116,38 @@ export default function Overview() {
       .list({ owner, date_from: toISO(rangeStart), date_to: toISO(rangeEnd) })
       .then(setIncomes)
       .catch((err) => setError(err.message))
-  }, [owner, rangeStart, rangeEnd, isMonthlyPeriod, isCategoryFiltered, isAmountFiltered, isTagFiltered, isCardFiltered])
+  }, [owner, rangeStart, rangeEnd, isMonthlyPeriod, isCategoryFiltered, isAmountFiltered, isTagFiltered, isCardFiltered, cashInEligible])
 
   const categoryById = useMemo(() => Object.fromEntries(categories.map((c) => [c.id, c])), [categories])
+
+  // The transactions API already applies amount_min/amount_max server-side,
+  // but /api/income/ doesn't support it - apply the same bounds client-side
+  // whenever income is being folded into a Cash in figure below, so e.g.
+  // "Cash in, Min $500" correctly includes a $600 paycheck. Memoized so the
+  // useMemos below can depend on the function itself instead of restating
+  // amountMin/amountMax as their own dependencies.
+  const incomePassesAmountFilter = useCallback(
+    (amt) => (amountMin === '' || amt >= Number(amountMin)) && (amountMax === '' || amt <= Number(amountMax)),
+    [amountMin, amountMax]
+  )
 
   const totalSpent = useMemo(
     () => transactions.reduce((sum, t) => (Number(t.amount) > 0 ? sum + Number(t.amount) : sum), 0),
     [transactions]
   )
 
-  const totalEarned = useMemo(
-    () => transactions.reduce((sum, t) => (Number(t.amount) < 0 ? sum + Math.abs(Number(t.amount)) : sum), 0),
-    [transactions]
-  )
+  const totalEarned = useMemo(() => {
+    const fromTransactions = transactions.reduce(
+      (sum, t) => (Number(t.amount) < 0 ? sum + Math.abs(Number(t.amount)) : sum),
+      0
+    )
+    if (!cashInEligible) return fromTransactions
+    const fromIncome = incomes.reduce((sum, i) => {
+      const amt = Number(i.amount)
+      return incomePassesAmountFilter(amt) ? sum + amt : sum
+    }, 0)
+    return fromTransactions + fromIncome
+  }, [transactions, incomes, cashInEligible, incomePassesAmountFilter])
 
   const perPersonTotals = useMemo(() => {
     const totals = Object.fromEntries(users.map((u) => [u.username, 0]))
@@ -132,8 +164,22 @@ export default function Overview() {
       const amt = Number(t.amount)
       if (amt < 0 && t.owner in totals) totals[t.owner] += Math.abs(amt)
     }
+    if (cashInEligible) {
+      for (const i of incomes) {
+        const amt = Number(i.amount)
+        if (incomePassesAmountFilter(amt) && i.owner in totals) totals[i.owner] += amt
+      }
+    }
     return totals
-  }, [transactions, users])
+  }, [transactions, incomes, users, cashInEligible, incomePassesAmountFilter])
+
+  // Feeds the "Transactions" stat tile - kept in step with totalEarned/
+  // earnedByPersonTotals above so the count and the dollar figure next to
+  // it are counting the same set of things.
+  const cashInIncomeCount = useMemo(() => {
+    if (!cashInEligible) return 0
+    return incomes.filter((i) => incomePassesAmountFilter(Number(i.amount))).length
+  }, [incomes, cashInEligible, incomePassesAmountFilter])
 
   const breakdown = useMemo(() => {
     const totals = {}
@@ -210,6 +256,19 @@ export default function Overview() {
       if (minDate === null || t.date < minDate) minDate = t.date
       if (maxDate === null || t.date > maxDate) maxDate = t.date
     }
+    if (cashInEligible) {
+      for (const i of incomes) {
+        const amt = Number(i.amount)
+        if (!incomePassesAmountFilter(amt)) continue
+        // Same sign convention as above: combined mode needs cash-in
+        // negative to plot below the line, single-direction Cash in wants
+        // the plain positive magnitude.
+        const value = isCombined ? -amt : amt
+        totals[i.date] = (totals[i.date] || 0) + value
+        if (minDate === null || i.date < minDate) minDate = i.date
+        if (maxDate === null || i.date > maxDate) maxDate = i.date
+      }
+    }
     // "All time" resolves to 2000-01-01..today (~9,700 days) - enumerating
     // every one of those as an x-axis point is both slow and visually
     // useless: real spending (e.g. a tag like a trip, which jumps the date
@@ -234,7 +293,7 @@ export default function Overview() {
       date: date.slice(5), // MM-DD
       value: Number((totals[date] || 0).toFixed(2)),
     }))
-  }, [transactions, rangeStart, rangeEnd, dateFilter, isCombined])
+  }, [transactions, incomes, rangeStart, rangeEnd, dateFilter, isCombined, cashInEligible, incomePassesAmountFilter])
 
   return (
     <div className="stack">
@@ -322,7 +381,7 @@ export default function Overview() {
         )}
         <div className="card stat-tile" style={{ flex: 1 }}>
           <div className="muted small">Transactions</div>
-          <div className="stat-number">{transactions.length}</div>
+          <div className="stat-number">{transactions.length + cashInIncomeCount}</div>
         </div>
       </div>
 

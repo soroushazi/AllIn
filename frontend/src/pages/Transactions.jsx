@@ -217,14 +217,22 @@ export default function Transactions() {
   const [search, setSearch] = useState('')
 
   const [transactions, setTransactions] = useState([])
+  const [incomes, setIncomes] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [pendingDelete, setPendingDelete] = useState(null)
+  const [pendingIncomeDelete, setPendingIncomeDelete] = useState(null)
   const [editingTransaction, setEditingTransaction] = useState(null)
   const [showAddForm, setShowAddForm] = useState(false)
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [showBulkEdit, setShowBulkEdit] = useState(false)
   const [pendingBulkDelete, setPendingBulkDelete] = useState(false)
+
+  // Income has no card/category/tag of its own, so it can't meaningfully
+  // satisfy a filter on any of those - only fold it into the list when
+  // Cash in is involved and none of those three narrow the view. Same
+  // reasoning as the equivalent flag on Overview.
+  const cashInEligible = (direction === 'in' || direction === '') && !cardId && !categoryId && !tagId
 
   const [rangeStart, rangeEnd] = useMemo(
     () => getDateRange(dateFilter, customStart, customEnd),
@@ -261,6 +269,42 @@ export default function Transactions() {
     // load itself changing identity.
     setSelectedIds(new Set())
   }, [load])
+
+  useEffect(() => {
+    if (!cashInEligible) {
+      setIncomes([])
+      return
+    }
+    api.income
+      .list({ owner, date_from: toISO(rangeStart), date_to: toISO(rangeEnd) })
+      .then(setIncomes)
+      .catch((err) => setError(err.message))
+  }, [owner, rangeStart, rangeEnd, cashInEligible])
+
+  // /api/income/ doesn't support amount_min/amount_max or search like
+  // /api/transactions/ does, so both are applied client-side here instead -
+  // income lists are small (a handful of paychecks a month), so this is
+  // cheap. Search matches against `source`, the closest thing income has to
+  // a transaction's description.
+  const filteredIncomes = useMemo(() => {
+    return incomes.filter((i) => {
+      const amt = Number(i.amount)
+      if (amountMin !== '' && amt < Number(amountMin)) return false
+      if (amountMax !== '' && amt > Number(amountMax)) return false
+      if (search && !(i.source || '').toLowerCase().includes(search.toLowerCase())) return false
+      return true
+    })
+  }, [incomes, amountMin, amountMax, search])
+
+  // A single combined, date-sorted list for rendering - Income entries
+  // don't have a card/category/tags/notes/location like a Transaction does,
+  // so they render with their own distinct row (see IncomeRow below) rather
+  // than being coerced into the same shape.
+  const mergedItems = useMemo(() => {
+    const txItems = transactions.map((t) => ({ kind: 'transaction', date: t.date, data: t }))
+    const incomeItems = filteredIncomes.map((i) => ({ kind: 'income', date: i.date, data: i }))
+    return [...txItems, ...incomeItems].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+  }, [transactions, filteredIncomes])
 
   const tagSuggestions = useMemo(() => tags.map((t) => t.name), [tags])
 
@@ -304,6 +348,19 @@ export default function Transactions() {
       await api.transactions.remove(t.id)
     } catch (err) {
       setTransactions(previous)
+      setError(err.message)
+    }
+  }
+
+  async function confirmIncomeDelete() {
+    const entry = pendingIncomeDelete
+    setPendingIncomeDelete(null)
+    const previous = incomes
+    setIncomes((prev) => prev.filter((i) => i.id !== entry.id))
+    try {
+      await api.income.remove(entry.id)
+    } catch (err) {
+      setIncomes(previous)
       setError(err.message)
     }
   }
@@ -447,8 +504,15 @@ export default function Transactions() {
       {error && <div className="error-text">{error}</div>}
       {loading && <p className="muted">Loading...</p>}
 
-      {!loading && transactions.length === 0 && <p className="muted">No transactions match these filters.</p>}
+      {!loading && mergedItems.length === 0 && (
+        <p className="muted">
+          {cashInEligible ? 'No transactions or income match these filters.' : 'No transactions match these filters.'}
+        </p>
+      )}
 
+      {/* Bulk-select only ever applies to real Transaction rows - Income
+          has no category/tags for the bulk-edit dialog to act on, so it's
+          scoped to transactions.length, not the merged count. */}
       {!loading && transactions.length > 0 && (
         <div className="bulk-bar">
           <label className="select-all-row">
@@ -497,7 +561,44 @@ export default function Transactions() {
       )}
 
       <ul className="transaction-list">
-        {transactions.map((t) => {
+        {mergedItems.map((item) => {
+          if (item.kind === 'income') {
+            const i = item.data
+            return (
+              <li key={`income-${i.id}`} className="transaction-row">
+                {/* Disabled+hidden, not omitted - keeps this row's content
+                    starting at the same indent as a transaction row's
+                    (which has a real, interactive checkbox), so the merged
+                    list doesn't visually jump between rows. Income never
+                    participates in bulk-select. */}
+                <input type="checkbox" className="transaction-select invisible" disabled tabIndex={-1} aria-hidden="true" />
+
+                <div className="transaction-content">
+                  <div className="transaction-tags">
+                    <span className="income-badge">Income</span>
+                  </div>
+
+                  <div className="transaction-main">
+                    <span className="category-dot" style={{ background: 'var(--accent)' }} />
+                    <div className="transaction-desc">{i.source || 'Income'}</div>
+                    <div className="amount positive">+{Number(i.amount).toFixed(2)}</div>
+                  </div>
+
+                  <div className="transaction-sub muted small">
+                    {i.date} · {i.owner[0].toUpperCase() + i.owner.slice(1)}
+                  </div>
+
+                  <div className="transaction-actions">
+                    <button className="link-button danger" onClick={() => setPendingIncomeDelete(i)}>
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              </li>
+            )
+          }
+
+          const t = item.data
           const category = categoryById[t.category]
           return (
             <li key={t.id} className={`transaction-row${selectedIds.has(t.id) ? ' selected' : ''}`}>
@@ -586,6 +687,17 @@ export default function Transactions() {
         }
         onConfirm={confirmDelete}
         onCancel={() => setPendingDelete(null)}
+      />
+
+      <ConfirmDialog
+        open={!!pendingIncomeDelete}
+        title="Delete income entry?"
+        message={
+          pendingIncomeDelete &&
+          `"${pendingIncomeDelete.source || 'Income'}" ($${Number(pendingIncomeDelete.amount).toFixed(2)} on ${pendingIncomeDelete.date}) will be permanently deleted.`
+        }
+        onConfirm={confirmIncomeDelete}
+        onCancel={() => setPendingIncomeDelete(null)}
       />
 
       {showBulkEdit && (

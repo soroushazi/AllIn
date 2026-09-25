@@ -504,6 +504,20 @@ button:disabled {
   font-size: 0.75rem;
 }
 
+/* Marks an Income entry mixed into the Transactions list (Cash in/Cash in &
+   out) - same pill shape as a tag, but a green "money in" tint (matching
+   the Cash in trend chart/Total earned text) so it doesn't read as just
+   another tag, and stays visually distinct from an ordinary cash-in
+   refund transaction even though both show the same green "+" amount. */
+.income-badge {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
 .transaction-actions {
   display: flex;
   align-items: center;
