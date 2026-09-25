@@ -24,10 +24,21 @@ services:
 
   backend:
     build: ./backend
+    # --timeout 200: gunicorn's default worker timeout is 30s, but the
+    # import pipeline's batched Ollama category-resolution call
+    # (resolve_categories_via_llm, services.py) uses a 180s request timeout
+    # of its own - a larger import (more never-before-seen merchants in one
+    # upload) can genuinely take that long. Without this flag gunicorn
+    # silently kills the worker mid-request on any upload whose LLM call
+    # runs past 30s, surfacing as a bare 500 with no detail (DEBUG=false in
+    # prod) - confirmed as the cause of the "works split into weekly files,
+    # fails as one larger file" report, 2026-09-25. 200s gives headroom over
+    # both that 180s call and voice capture's 90s Ollama call on the same
+    # workers.
     command: >
       sh -c "python manage.py migrate &&
              python manage.py collectstatic --noinput &&
-             gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3"
+             gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 200"
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
