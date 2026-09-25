@@ -396,6 +396,16 @@ export default function Overview() {
               fill={isCashInOnly ? 'var(--accent)' : 'var(--chart-line)'}
               fillOpacity={0.15}
               strokeWidth={2}
+              // Recharts animates the curve morphing from its previous
+              // shape to the new one on every data change by default
+              // (~1.5s) - every filter change (direction, date range, tag,
+              // ...) recomputes `trend` and re-triggers that transition,
+              // which reads as laggy/choppy rather than useful motion,
+              // especially for a sparser curve with sharp swings (reported
+              // on Cash in). The chart already updates the instant new data
+              // arrives; there's nothing the animation communicates that's
+              // worth the stutter.
+              isAnimationActive={false}
             />
           </AreaChart>
         </ResponsiveContainer>
