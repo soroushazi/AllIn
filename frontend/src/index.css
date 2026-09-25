@@ -399,10 +399,40 @@ button.primary:disabled {
   padding: 12px;
 }
 
+.transaction-row.selected {
+  border-color: var(--accent);
+}
+
 .transaction-main {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.transaction-select {
+  flex-shrink: 0;
+}
+
+/* Group-edit bar above the transaction list (Transactions screen) - a
+   "select all" checkbox that turns into a small action bar once at least
+   one row is selected. */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.select-all-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: auto;
+  font-weight: 600;
 }
 
 .category-dot {

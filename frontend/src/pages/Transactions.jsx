@@ -86,6 +86,87 @@ function EditTransactionDialog({ transaction, categories, locationSuggestions, t
   )
 }
 
+function BulkEditDialog({ count, categories, tagSuggestions, onSave, onCancel }) {
+  // '' = leave each transaction's category as-is, 'none' = uncategorize all,
+  // otherwise a category id - same three-state need as the single-edit
+  // dialog doesn't have, since that one always shows (and can replace) one
+  // real current value; here there usually isn't one shared value across
+  // the whole selection.
+  const [categoryChoice, setCategoryChoice] = useState('')
+  const [addTags, setAddTags] = useState([])
+
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key === 'Escape') onCancel()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [onCancel])
+
+  function addTag(name) {
+    const value = name.trim()
+    if (!value || addTags.some((t) => t.toLowerCase() === value.toLowerCase())) return
+    setAddTags([...addTags, value])
+  }
+
+  function removeTag(name) {
+    setAddTags(addTags.filter((t) => t !== name))
+  }
+
+  const hasChanges = categoryChoice !== '' || addTags.length > 0
+
+  return (
+    <div className="dialog-overlay" onClick={onCancel}>
+      <div className="dialog-card card stack" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        <h3 className="dialog-title">Edit {count} transaction{count === 1 ? '' : 's'}</h3>
+        <p className="dialog-message muted">
+          Only what you change here gets applied - anything left as "Don't change" stays as it was on each
+          transaction.
+        </p>
+
+        <label>
+          Category
+          <select value={categoryChoice} onChange={(e) => setCategoryChoice(e.target.value)}>
+            <option value="">Don't change</option>
+            <option value="none">Uncategorized</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          Add tag
+          <TagEditor tags={addTags} suggestions={tagSuggestions} onAdd={addTag} onRemove={removeTag} />
+        </label>
+        <p className="muted small">Each transaction's existing tags are kept - this only adds new ones.</p>
+
+        <div className="dialog-actions">
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={!hasChanges}
+            onClick={() =>
+              onSave({
+                categoryProvided: categoryChoice !== '',
+                category: categoryChoice === 'none' ? null : categoryChoice ? Number(categoryChoice) : undefined,
+                addTags,
+              })
+            }
+          >
+            Apply to {count}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function AddTransactionDialog({ cards, categories, locationSuggestions, tagSuggestions, onAdded, onClose }) {
   useEffect(() => {
     function onKeyDown(e) {
@@ -141,6 +222,9 @@ export default function Transactions() {
   const [pendingDelete, setPendingDelete] = useState(null)
   const [editingTransaction, setEditingTransaction] = useState(null)
   const [showAddForm, setShowAddForm] = useState(false)
+  const [selectedIds, setSelectedIds] = useState(new Set())
+  const [showBulkEdit, setShowBulkEdit] = useState(false)
+  const [pendingBulkDelete, setPendingBulkDelete] = useState(false)
 
   const [rangeStart, rangeEnd] = useMemo(
     () => getDateRange(dateFilter, customStart, customEnd),
@@ -169,6 +253,13 @@ export default function Transactions() {
 
   useEffect(() => {
     load()
+    // A filter change can change which transactions are even visible, so a
+    // stale selection (ids no longer on screen) would make "N selected"
+    // lie - clear it whenever the filters (i.e. load's own identity) change.
+    // This does *not* fire on the plain re-fetches below (adding a
+    // transaction, bulk actions) since those call load() directly without
+    // load itself changing identity.
+    setSelectedIds(new Set())
   }, [load])
 
   const tagSuggestions = useMemo(() => tags.map((t) => t.name), [tags])
@@ -211,6 +302,55 @@ export default function Transactions() {
     setTransactions((txs) => txs.filter((tx) => tx.id !== t.id))
     try {
       await api.transactions.remove(t.id)
+    } catch (err) {
+      setTransactions(previous)
+      setError(err.message)
+    }
+  }
+
+  function toggleSelect(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function selectAllVisible() {
+    setSelectedIds(new Set(transactions.map((t) => t.id)))
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set())
+  }
+
+  async function handleBulkSave({ categoryProvided, category, addTags }) {
+    const ids = [...selectedIds]
+    setShowBulkEdit(false)
+    try {
+      const body = {}
+      if (categoryProvided) body.category = category
+      if (addTags.length > 0) body.add_tags = addTags
+      const updated = await api.transactions.bulkUpdate(ids, body)
+      const byId = Object.fromEntries(updated.map((t) => [t.id, t]))
+      setTransactions((txs) => txs.map((tx) => (byId[tx.id] ? { ...tx, ...byId[tx.id] } : tx)))
+      setSelectedIds(new Set())
+      if (addTags.length > 0) api.tags.list().then(setTags).catch(() => {})
+    } catch (err) {
+      setError(err.message)
+      load()
+    }
+  }
+
+  async function confirmBulkDelete() {
+    const ids = [...selectedIds]
+    setPendingBulkDelete(false)
+    const previous = transactions
+    setTransactions((txs) => txs.filter((tx) => !selectedIds.has(tx.id)))
+    setSelectedIds(new Set())
+    try {
+      await api.transactions.bulkRemove(ids)
     } catch (err) {
       setTransactions(previous)
       setError(err.message)
@@ -309,11 +449,40 @@ export default function Transactions() {
 
       {!loading && transactions.length === 0 && <p className="muted">No transactions match these filters.</p>}
 
+      {!loading && transactions.length > 0 && (
+        <div className="bulk-bar">
+          <label className="select-all-row">
+            <input
+              type="checkbox"
+              checked={selectedIds.size > 0 && selectedIds.size === transactions.length}
+              ref={(el) => {
+                if (el) el.indeterminate = selectedIds.size > 0 && selectedIds.size < transactions.length
+              }}
+              onChange={(e) => (e.target.checked ? selectAllVisible() : clearSelection())}
+            />
+            {selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}
+          </label>
+          {selectedIds.size > 0 && (
+            <>
+              <button type="button" onClick={() => setShowBulkEdit(true)}>
+                Edit selected
+              </button>
+              <button type="button" className="link-button danger" onClick={() => setPendingBulkDelete(true)}>
+                Delete selected
+              </button>
+              <button type="button" className="link-button" onClick={clearSelection}>
+                Clear
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       <ul className="transaction-list">
         {transactions.map((t) => {
           const category = categoryById[t.category]
           return (
-            <li key={t.id} className="transaction-row">
+            <li key={t.id} className={`transaction-row${selectedIds.has(t.id) ? ' selected' : ''}`}>
               {t.tags.length > 0 && (
                 <div className="transaction-tags">
                   {t.tags.map((tag) => (
@@ -325,6 +494,13 @@ export default function Transactions() {
               )}
 
               <div className="transaction-main">
+                <input
+                  type="checkbox"
+                  className="transaction-select"
+                  checked={selectedIds.has(t.id)}
+                  onChange={() => toggleSelect(t.id)}
+                  aria-label={`Select ${t.description}`}
+                />
                 <span
                   className="category-dot"
                   style={{ background: category ? category.color : 'var(--surface-3)' }}
@@ -389,6 +565,24 @@ export default function Transactions() {
         }
         onConfirm={confirmDelete}
         onCancel={() => setPendingDelete(null)}
+      />
+
+      {showBulkEdit && (
+        <BulkEditDialog
+          count={selectedIds.size}
+          categories={categories}
+          tagSuggestions={tagSuggestions}
+          onSave={handleBulkSave}
+          onCancel={() => setShowBulkEdit(false)}
+        />
+      )}
+
+      <ConfirmDialog
+        open={pendingBulkDelete}
+        title={`Delete ${selectedIds.size} transaction${selectedIds.size === 1 ? '' : 's'}?`}
+        message={`${selectedIds.size} transaction${selectedIds.size === 1 ? '' : 's'} will be permanently deleted.`}
+        onConfirm={confirmBulkDelete}
+        onCancel={() => setPendingBulkDelete(false)}
       />
     </div>
   )

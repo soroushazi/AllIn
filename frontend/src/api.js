@@ -99,6 +99,9 @@ export const api = {
     remove: (id) => request(`/api/transactions/${id}/`, { method: 'DELETE' }),
     recategorize: (id, category) =>
       request(`/api/transactions/${id}/recategorize/`, { method: 'PATCH', body: { category } }),
+    bulkUpdate: (ids, changes) =>
+      request('/api/transactions/bulk-update/', { method: 'POST', body: { ids, ...changes } }),
+    bulkRemove: (ids) => request('/api/transactions/bulk-delete/', { method: 'POST', body: { ids } }),
   },
 
   tags: {

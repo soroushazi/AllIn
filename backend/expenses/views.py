@@ -31,6 +31,7 @@ from .serializers import (
     TransactionCreateSerializer,
     TransactionSerializer,
     YearlyExpenseSerializer,
+    get_or_create_tags,
 )
 from .services import (
     UnparseableFileError,
@@ -366,6 +367,62 @@ class TransactionViewSet(
                 MerchantRule.objects.update_or_create(keyword=keyword, defaults={"category": category})
 
         return Response(TransactionSerializer(transaction).data)
+
+    @action(detail=False, methods=["post"], url_path="bulk-update")
+    def bulk_update(self, request):
+        # Multi-select group edit (Transactions screen) - change category
+        # and/or add a tag across every selected row in one request. Tags are
+        # additive only (tags.add, never tags.set) since a bulk selection
+        # will usually mix rows that already carry different tags of their
+        # own - "add a tag to these" shouldn't silently wipe out whatever
+        # else was already there, unlike the single-transaction Edit dialog
+        # which shows (and can deliberately replace) one row's full tag list.
+        ids = request.data.get("ids") or []
+        if not ids:
+            return Response({"detail": "ids is required"}, status=400)
+        qs = list(Transaction.objects.filter(id__in=ids))
+        if not qs:
+            return Response({"detail": "No matching transactions."}, status=404)
+
+        category_provided = "category" in request.data
+        category = None
+        if category_provided:
+            category_id = request.data.get("category")
+            category = None if category_id in (None, "") else get_object_or_404(Category, pk=category_id)
+
+        add_tag_names = request.data.get("add_tags") or []
+        new_tags = get_or_create_tags(add_tag_names) if add_tag_names else []
+
+        for transaction in qs:
+            if category_provided:
+                transaction.category = category
+                transaction.save(update_fields=["category"])
+                if category is not None:
+                    # Same merchant-rule teaching as the single-transaction
+                    # recategorize() above, applied per row so each row's own
+                    # merchant (not just the first one) gets a rule.
+                    keyword = extract_merchant_keyword(transaction.location or transaction.description)
+                    if keyword:
+                        MerchantRule.objects.update_or_create(keyword=keyword, defaults={"category": category})
+            if new_tags:
+                transaction.tags.add(*new_tags)
+
+        # Re-fetch rather than serialize the mutated-in-place instances -
+        # tags.add() doesn't reliably update an in-memory instance's related
+        # manager, so re-querying guarantees the response reflects what was
+        # actually written.
+        fresh = Transaction.objects.filter(id__in=ids).select_related("owner", "card", "category").prefetch_related(
+            "tags"
+        )
+        return Response(TransactionSerializer(fresh, many=True).data)
+
+    @action(detail=False, methods=["post"], url_path="bulk-delete")
+    def bulk_delete(self, request):
+        ids = request.data.get("ids") or []
+        if not ids:
+            return Response({"detail": "ids is required"}, status=400)
+        deleted, _ = Transaction.objects.filter(id__in=ids).delete()
+        return Response({"deleted": deleted})
 
 
 class TransactionImportView(APIView):
