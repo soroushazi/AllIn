@@ -462,22 +462,35 @@ export default function Transactions() {
             />
             {selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}
           </label>
-          {/* Always rendered (just disabled at 0 selected), rather than
-              conditionally mounted, so the bar never grows/shrinks a line
-              on select/deselect - a jarring reflow the user flagged when
-              this only appeared once something was selected. */}
-          <button type="button" disabled={selectedIds.size === 0} onClick={() => setShowBulkEdit(true)}>
+          {/* Always rendered - never conditionally mounted - so the bar's
+              height never changes on select/deselect (a jarring reflow the
+              user flagged when this only appeared once something was
+              selected). At 0 selected they're hidden via the invisible
+              class (visibility: hidden - keeps their layout space, unlike
+              display: none) rather than just disabled/dimmed, since the
+              user wants them not shown at all until there's a selection. */}
+          <button
+            type="button"
+            className={selectedIds.size === 0 ? 'invisible' : ''}
+            disabled={selectedIds.size === 0}
+            onClick={() => setShowBulkEdit(true)}
+          >
             Edit selected
           </button>
           <button
             type="button"
-            className="link-button danger"
+            className={`link-button danger${selectedIds.size === 0 ? ' invisible' : ''}`}
             disabled={selectedIds.size === 0}
             onClick={() => setPendingBulkDelete(true)}
           >
             Delete selected
           </button>
-          <button type="button" className="link-button" disabled={selectedIds.size === 0} onClick={clearSelection}>
+          <button
+            type="button"
+            className={`link-button${selectedIds.size === 0 ? ' invisible' : ''}`}
+            disabled={selectedIds.size === 0}
+            onClick={clearSelection}
+          >
             Clear
           </button>
         </div>

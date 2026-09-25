@@ -301,6 +301,15 @@ button:disabled {
   cursor: default;
 }
 
+/* Hides an element while keeping its layout space reserved - unlike
+   [hidden]/display:none, which would remove it and let surrounding content
+   reflow. Used for the bulk-bar action buttons (Transactions screen), which
+   stay mounted at a fixed size so the bar's height never changes, but
+   shouldn't be visible at all until something is selected. */
+.invisible {
+  visibility: hidden;
+}
+
 .dialog-confirm {
   background: var(--danger);
   color: #fff;
