@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useCards, useCategories, useLocations, useTags, useUsers } from '../hooks'
 import AddTransactionForm from '../AddTransactionForm'
+import ConfirmDialog from '../ConfirmDialog'
 
 const EMPTY_MAPPING = {
   date_column: '',
@@ -55,11 +56,15 @@ function LogIncome() {
     }
   }
 
-  async function handleDelete(id) {
+  const [pendingDelete, setPendingDelete] = useState(null)
+
+  async function confirmDelete() {
+    const entry = pendingDelete
+    setPendingDelete(null)
     const previous = entries
-    setEntries((prev) => prev.filter((e) => e.id !== id))
+    setEntries((prev) => prev.filter((e) => e.id !== entry.id))
     try {
-      await api.income.remove(id)
+      await api.income.remove(entry.id)
     } catch (err) {
       setEntries(previous)
       setError(err.message)
@@ -115,23 +120,42 @@ function LogIncome() {
       <ul className="transaction-list">
         {entries.map((entry) => (
           <li key={entry.id} className="transaction-row">
-            <div className="transaction-main">
-              <div className="transaction-desc">
-                <div>{entry.source || 'Income'}</div>
-                <div className="muted small">
-                  {entry.date} - {entry.owner[0].toUpperCase() + entry.owner.slice(1)}
+            {/* .transaction-row is a flex row now (checkbox + content, for
+                the Transactions screen's bulk-select) - wrapping everything
+                here in one .transaction-content child keeps this list's own
+                content stacking vertically same as before, instead of
+                .transaction-main/.transaction-actions becoming flex-row
+                siblings squeezed onto one line. */}
+            <div className="transaction-content">
+              <div className="transaction-main">
+                <div className="transaction-desc">
+                  <div>{entry.source || 'Income'}</div>
+                  <div className="muted small">
+                    {entry.date} - {entry.owner[0].toUpperCase() + entry.owner.slice(1)}
+                  </div>
                 </div>
+                <div className="amount positive">+{Number(entry.amount).toFixed(2)}</div>
               </div>
-              <div className="amount positive">+{Number(entry.amount).toFixed(2)}</div>
-            </div>
-            <div className="transaction-actions">
-              <button className="link-button danger" onClick={() => handleDelete(entry.id)}>
-                Delete
-              </button>
+              <div className="transaction-actions">
+                <button className="link-button danger" onClick={() => setPendingDelete(entry)}>
+                  Delete
+                </button>
+              </div>
             </div>
           </li>
         ))}
       </ul>
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title="Delete income entry?"
+        message={
+          pendingDelete &&
+          `"${pendingDelete.source || 'Income'}" ($${Number(pendingDelete.amount).toFixed(2)} on ${pendingDelete.date}) will be permanently deleted.`
+        }
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   )
 }
@@ -180,24 +204,29 @@ function AddTransaction() {
               const category = categoryById[t.category]
               return (
                 <li key={t.id} className="transaction-row">
-                  <div className="transaction-main">
-                    <span
-                      className="category-dot"
-                      style={{ background: category ? category.color : 'var(--surface-3)' }}
-                    />
-                    <div className="transaction-desc">{t.description}</div>
-                    <div className={`amount ${Number(t.amount) < 0 ? 'positive' : ''}`}>
-                      {Number(t.amount) < 0 ? '+' : ''}
-                      {Math.abs(Number(t.amount)).toFixed(2)}
+                  {/* Same .transaction-content wrapping as LogIncome above -
+                      .transaction-row is a flex row now (checkbox + content,
+                      for the Transactions screen's bulk-select). */}
+                  <div className="transaction-content">
+                    <div className="transaction-main">
+                      <span
+                        className="category-dot"
+                        style={{ background: category ? category.color : 'var(--surface-3)' }}
+                      />
+                      <div className="transaction-desc">{t.description}</div>
+                      <div className={`amount ${Number(t.amount) < 0 ? 'positive' : ''}`}>
+                        {Number(t.amount) < 0 ? '+' : ''}
+                        {Math.abs(Number(t.amount)).toFixed(2)}
+                      </div>
                     </div>
-                  </div>
-                  <div className="transaction-sub muted small">
-                    {t.date} · {category ? category.name : 'Uncategorized'}
-                  </div>
-                  <div className="transaction-actions">
-                    <button className="link-button danger" onClick={() => handleDelete(t.id)}>
-                      Delete
-                    </button>
+                    <div className="transaction-sub muted small">
+                      {t.date} · {category ? category.name : 'Uncategorized'}
+                    </div>
+                    <div className="transaction-actions">
+                      <button className="link-button danger" onClick={() => handleDelete(t.id)}>
+                        Delete
+                      </button>
+                    </div>
                   </div>
                 </li>
               )
