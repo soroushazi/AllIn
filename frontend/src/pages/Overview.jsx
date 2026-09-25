@@ -190,16 +190,20 @@ export default function Overview() {
     let maxDate = null
     for (const t of transactions) {
       const amt = Number(t.amount)
-      // Sum the raw signed amount rather than filtering to spending only -
-      // this app already stores spending positive and refunds/cash-in
-      // negative (see the sign-convention notes throughout this file/repo),
-      // so for the "Cash in & out" direction the daily total naturally
-      // comes out exactly as wanted: cash out pushes it positive, cash in
-      // pushes it negative, no separate series needed. For "Cash out" the
-      // server already only returns amount > 0 rows (direction=out), so
-      // this is unchanged from before; "Cash in" never renders this chart
-      // (gated by !isCashInOnly below).
-      totals[t.date] = (totals[t.date] || 0) + amt
+      // Combined mode sums the raw signed amount - this app already stores
+      // spending positive and refunds/cash-in negative (see the sign-
+      // convention notes throughout this file/repo), so the daily total
+      // naturally comes out exactly as wanted: cash out pushes it positive,
+      // cash in pushes it negative, no separate series needed. Cash-out-only
+      // and Cash-in-only both plot the magnitude instead - the server
+      // already returns only one sign for those (amount>0 / amount<0
+      // respectively), and every other display of a cash-in figure in this
+      // app (Total earned, By person) already flips it positive too, so a
+      // standalone Cash in trend reads the same way rather than being an
+      // all-negative chart with no offsetting positive side to contrast it
+      // against.
+      const value = isCombined ? amt : Math.abs(amt)
+      totals[t.date] = (totals[t.date] || 0) + value
       // t.date is an ISO "YYYY-MM-DD" string, so plain string comparison
       // sorts correctly - no need to parse into Date objects just to find
       // the earliest/latest.
@@ -230,7 +234,7 @@ export default function Overview() {
       date: date.slice(5), // MM-DD
       value: Number((totals[date] || 0).toFixed(2)),
     }))
-  }, [transactions, rangeStart, rangeEnd, dateFilter])
+  }, [transactions, rangeStart, rangeEnd, dateFilter, isCombined])
 
   return (
     <div className="stack">
@@ -347,43 +351,55 @@ export default function Overview() {
         </div>
       )}
 
-      {!isCashInOnly && (
-        <div className="card">
-          <div className="muted small" style={{ marginBottom: isCombined ? 2 : 8 }}>
-            {isCombined ? 'Cash flow trend' : 'Spend trend'}
-          </div>
-          {isCombined && (
-            <div className="muted small" style={{ marginBottom: 8 }}>
-              Cash out shown above the line (+), cash in below it (−)
-            </div>
-          )}
-          <ResponsiveContainer width="100%" height={isCombined ? 260 : 180}>
-            <AreaChart data={trend} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-              <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} axisLine={false} tickLine={false} />
-              <YAxis
-                tick={{ fontSize: 11, fill: 'var(--text-secondary)' }}
-                axisLine={false}
-                tickLine={false}
-                width={48}
-                tickFormatter={isCombined ? (v) => (v === 0 ? '$0' : `${v > 0 ? '+' : '-'}$${Math.abs(v)}`) : undefined}
-              />
-              {isCombined && <ReferenceLine y={0} stroke="var(--text-secondary)" />}
-              <Tooltip
-                contentStyle={{ background: 'var(--surface-2)', border: '1px solid var(--border)', fontSize: 12 }}
-                itemStyle={{ color: 'var(--text-primary)' }}
-                labelStyle={{ color: 'var(--text-secondary)' }}
-                formatter={
-                  isCombined
-                    ? (value) => [`${value < 0 ? '-' : ''}$${Math.abs(value).toFixed(2)}`, value < 0 ? 'Cash in' : 'Cash out']
-                    : (value) => [`$${value.toFixed(2)}`, 'Spent']
-                }
-              />
-              <Area type="monotone" dataKey="value" stroke="var(--chart-line)" fill="var(--chart-line)" fillOpacity={0.15} strokeWidth={2} />
-            </AreaChart>
-          </ResponsiveContainer>
+      {/* All three direction modes get a trend chart now - title/color/
+          tooltip below all branch on which one, so "Spend trend" never
+          mislabels what's actually plotted. */}
+      <div className="card">
+        <div className="muted small" style={{ marginBottom: isCombined ? 2 : 8 }}>
+          {isCombined ? 'Cash flow trend' : isCashInOnly ? 'Cash in trend' : 'Spend trend'}
         </div>
-      )}
+        {isCombined && (
+          <div className="muted small" style={{ marginBottom: 8 }}>
+            Cash out shown above the line (+), cash in below it (−)
+          </div>
+        )}
+        <ResponsiveContainer width="100%" height={isCombined ? 260 : 180}>
+          <AreaChart data={trend} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+            <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} axisLine={false} tickLine={false} />
+            <YAxis
+              tick={{ fontSize: 11, fill: 'var(--text-secondary)' }}
+              axisLine={false}
+              tickLine={false}
+              width={48}
+              tickFormatter={isCombined ? (v) => (v === 0 ? '$0' : `${v > 0 ? '+' : '-'}$${Math.abs(v)}`) : undefined}
+            />
+            {isCombined && <ReferenceLine y={0} stroke="var(--text-secondary)" />}
+            <Tooltip
+              contentStyle={{ background: 'var(--surface-2)', border: '1px solid var(--border)', fontSize: 12 }}
+              itemStyle={{ color: 'var(--text-primary)' }}
+              labelStyle={{ color: 'var(--text-secondary)' }}
+              formatter={
+                isCombined
+                  ? (value) => [`${value < 0 ? '-' : ''}$${Math.abs(value).toFixed(2)}`, value < 0 ? 'Cash in' : 'Cash out']
+                  : (value) => [`$${value.toFixed(2)}`, isCashInOnly ? 'Cash in' : 'Spent']
+              }
+            />
+            <Area
+              type="monotone"
+              dataKey="value"
+              // Cash in trend reuses the app's existing green "money in"
+              // color (--accent, same as the Total earned tile/net-positive
+              // text elsewhere) instead of the spend chart's blue, so it
+              // reads as a distinct kind of figure at a glance.
+              stroke={isCashInOnly ? 'var(--accent)' : 'var(--chart-line)'}
+              fill={isCashInOnly ? 'var(--accent)' : 'var(--chart-line)'}
+              fillOpacity={0.15}
+              strokeWidth={2}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
 
       {!isCashInOnly && !isCategoryFiltered && (
         <div className="card">
