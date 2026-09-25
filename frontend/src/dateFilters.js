@@ -5,6 +5,19 @@ export function toISO(d) {
   return `${y}-${m}-${day}`
 }
 
+// Parses a "YYYY-MM-DD" string (a transaction's own .date field, or a native
+// <input type="date">'s value) into a Date at *local* midnight. Plain
+// `new Date("YYYY-MM-DD")` parses a date-only ISO string as UTC midnight per
+// spec - in any timezone behind UTC, reading it back via local getters
+// (getFullYear/getMonth/getDate, as toISO above does) rolls the calendar day
+// back by one. Every Date built elsewhere in this app already avoids that by
+// using the (year, month, day) local constructor - this does the same for a
+// string that's only available as "YYYY-MM-DD".
+export function parseISODateLocal(iso) {
+  const [y, m, d] = iso.split('-').map(Number)
+  return new Date(y, m - 1, d)
+}
+
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
@@ -34,7 +47,7 @@ export function getDateRange(dateFilter, customStart, customEnd) {
   today.setHours(0, 0, 0, 0)
 
   if (dateFilter === 'custom') {
-    if (customStart && customEnd) return [new Date(customStart), new Date(customEnd)]
+    if (customStart && customEnd) return [parseISODateLocal(customStart), parseISODateLocal(customEnd)]
     return [today, today]
   }
 

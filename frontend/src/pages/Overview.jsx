@@ -3,7 +3,7 @@ import { CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, AreaChart, A
 import { api } from '../api'
 import { useCards, useCategories, useTags, useUsers } from '../hooks'
 import DateFilter from '../DateFilter'
-import { getDateRange, toISO } from '../dateFilters'
+import { getDateRange, parseISODateLocal, toISO } from '../dateFilters'
 
 function enumerateDates(start, end) {
   const dates = []
@@ -204,8 +204,15 @@ export default function Overview() {
     // the full selected range - every other date-filter option (week/
     // month/year/custom) is already a reasonable width to show in full,
     // gaps included, so this only changes All time's behavior.
-    const spanStart = dateFilter === 'all_time' && minDate ? new Date(minDate) : rangeStart
-    const spanEnd = dateFilter === 'all_time' && maxDate ? new Date(maxDate) : rangeEnd
+    //
+    // minDate/maxDate must go through parseISODateLocal, not plain
+    // `new Date(minDate)` - a bare "YYYY-MM-DD" string parses as UTC
+    // midnight per spec, and reading it back via toISO's local getters
+    // rolls the day back by one in any timezone behind UTC (confirmed: a
+    // 09-01/09-02 tagged pair rendered as 08-31/09-01, silently dropping
+    // the 09-02 transaction off the end of the range entirely).
+    const spanStart = dateFilter === 'all_time' && minDate ? parseISODateLocal(minDate) : rangeStart
+    const spanEnd = dateFilter === 'all_time' && maxDate ? parseISODateLocal(maxDate) : rangeEnd
     return enumerateDates(spanStart, spanEnd).map((date) => ({
       date: date.slice(5), // MM-DD
       value: Number((totals[date] || 0).toFixed(2)),
