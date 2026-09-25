@@ -296,7 +296,7 @@ button.primary {
   font-weight: 600;
 }
 
-button.primary:disabled {
+button:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -394,7 +394,7 @@ button.primary:disabled {
 
 .transaction-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   /* Deliberately wider than the app's usual 8-10px gap - the checkbox is a
      selection control, not part of the transaction's own content, so it
      gets real visual separation from the card body rather than reading as
@@ -423,9 +423,6 @@ button.primary:disabled {
 
 .transaction-select {
   flex-shrink: 0;
-  /* Nudge down to align with the description's text baseline rather than
-     the top edge of the card. */
-  margin-top: 3px;
 }
 
 /* Group-edit bar above the transaction list (Transactions screen) - a

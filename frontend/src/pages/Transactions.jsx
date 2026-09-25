@@ -462,19 +462,24 @@ export default function Transactions() {
             />
             {selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}
           </label>
-          {selectedIds.size > 0 && (
-            <>
-              <button type="button" onClick={() => setShowBulkEdit(true)}>
-                Edit selected
-              </button>
-              <button type="button" className="link-button danger" onClick={() => setPendingBulkDelete(true)}>
-                Delete selected
-              </button>
-              <button type="button" className="link-button" onClick={clearSelection}>
-                Clear
-              </button>
-            </>
-          )}
+          {/* Always rendered (just disabled at 0 selected), rather than
+              conditionally mounted, so the bar never grows/shrinks a line
+              on select/deselect - a jarring reflow the user flagged when
+              this only appeared once something was selected. */}
+          <button type="button" disabled={selectedIds.size === 0} onClick={() => setShowBulkEdit(true)}>
+            Edit selected
+          </button>
+          <button
+            type="button"
+            className="link-button danger"
+            disabled={selectedIds.size === 0}
+            onClick={() => setPendingBulkDelete(true)}
+          >
+            Delete selected
+          </button>
+          <button type="button" className="link-button" disabled={selectedIds.size === 0} onClick={clearSelection}>
+            Clear
+          </button>
         </div>
       )}
 
