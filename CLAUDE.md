@@ -1666,7 +1666,7 @@ data migration from local dev. **Known open risk, can't be tested from this
 x86 environment**: `faster-whisper`'s dependencies (`ctranslate2`, `av`)
 need aarch64 wheels for the ARM Ampere A1 instance - the backend image built
 and ran cleanly on x86 here, but the first real `docker compose -f
-docker-compose.prod.yml build` on the actual Oracle box is the first true
+docker-compose.prod.yml --env-file .env.prod build` on the actual Oracle box is the first true
 test of that; if a wheel is missing, the fix is pinning to whichever
 `ctranslate2` version last published `manylinux2014_aarch64` wheels, or
 falling back to a slower from-source build.
@@ -2160,8 +2160,15 @@ compose file still validates (`docker compose config`) and that
 `--timeout` is a real gunicorn flag whose documented default really is 30.
 **Not yet confirmed fixed on the real Oracle box** (no SSH access from this
 environment) - needs `git pull` + `docker compose -f
-docker-compose.prod.yml up -d --build backend` there, then a retry of the
-failing upload.
+docker-compose.prod.yml --env-file .env.prod up -d --build backend` there,
+then a retry of the failing upload. (Corrected 2026-10-03 - this note
+originally left out `--env-file .env.prod`, which recreates `db`/`backend`
+with blank `POSTGRES_*`/secret settings; the db then fails its
+`pg_isready -U ${POSTGRES_USER}` health check and `up` aborts with
+"dependency failed to start: container allin-db-1 is unhealthy". Data in
+the `postgres_data` volume is unaffected - rerunning with the flag fixes it.
+**Every** `docker compose -f docker-compose.prod.yml` command that creates,
+builds, or recreates containers needs `--env-file .env.prod`.)
 
 #### Transactions: multi-select bulk edit (category, add-tag, delete) — 2026-09-25, right after
 
