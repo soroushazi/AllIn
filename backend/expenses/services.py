@@ -971,6 +971,46 @@ def get_or_create_tags(names):
     return tags
 
 
+def convert_transactions_to_income(ids, source=None):
+    """Move already-recorded Transactions over to Income (e.g. a deposit that
+    was imported as a regular transaction): each becomes an Income entry for
+    the transaction's owner (amount = abs(amount), source = the given source
+    or else the transaction's own description) and is removed from the
+    ledger. If an Income with the same owner/date/amount already exists
+    (same dedupe rule as import), the transaction is still removed but no
+    second Income is created, so nothing gets counted twice. All-or-nothing.
+    """
+    from django.db import transaction as db_transaction
+
+    with db_transaction.atomic():
+        transactions = list(Transaction.objects.filter(id__in=ids).select_related("owner"))
+        existing_keys = set(
+            Income.objects.filter(
+                owner_id__in={t.owner_id for t in transactions}, date__in={t.date for t in transactions}
+            ).values_list("owner_id", "date", "amount")
+        )
+        new_incomes = []
+        already_logged = 0
+        for t in transactions:
+            key = (t.owner_id, t.date, abs(t.amount))
+            if key in existing_keys:
+                already_logged += 1
+                continue
+            existing_keys.add(key)
+            new_incomes.append(
+                Income(
+                    owner=t.owner,
+                    date=t.date,
+                    amount=abs(t.amount),
+                    source=(source or "").strip() or t.description,
+                )
+            )
+        Income.objects.bulk_create(new_incomes)
+        Transaction.objects.filter(id__in=[t.id for t in transactions]).delete()
+
+    return {"converted": len(new_incomes), "already_logged": already_logged}
+
+
 def commit_import_rows(rows):
     """Create real Transactions from a reviewed/edited pending_transactions
     batch (see import_transactions). Re-checks for duplicates at commit time

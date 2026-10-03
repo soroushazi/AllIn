@@ -782,7 +782,19 @@ button:disabled {
 }
 
 /* Import review: a row the user chose to remove stays visible (so it can be
-   switched back) but reads as dimmed/inactive. */
-.review-row-removed {
-  opacity: 0.55;
+   switched back), with its description and amount struck through in red so
+   it's clear that money won't be tracked. */
+.review-row-removed .review-removed-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-secondary);
+  text-decoration: line-through;
+  text-decoration-color: var(--danger);
+  text-decoration-thickness: 2px;
+}
+
+.review-removed-desc {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }

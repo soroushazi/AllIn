@@ -102,6 +102,8 @@ export const api = {
     bulkUpdate: (ids, changes) =>
       request('/api/transactions/bulk-update/', { method: 'POST', body: { ids, ...changes } }),
     bulkRemove: (ids) => request('/api/transactions/bulk-delete/', { method: 'POST', body: { ids } }),
+    toIncome: (ids, source) =>
+      request('/api/transactions/to-income/', { method: 'POST', body: { ids, ...(source ? { source } : {}) } }),
   },
 
   tags: {

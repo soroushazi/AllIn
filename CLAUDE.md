@@ -2234,8 +2234,11 @@ Each row in the import review step now has a three-way `.user-toggle`
 (**Transaction / Income / Remove**) plus a `TagEditor` (transaction rows
 only). This replaced the separate "Remove / Approve anyway" toggle for
 possible duplicates: flagged rows now just default to `action: 'remove'`
-on the same toggle. A Removed row stays visible but dimmed
-(`.review-row-removed`) so it can be switched back. Income rows hide
+on the same toggle. A Removed row stays visible (so it can be switched back)
+and shows only its description and amount, struck through with a 2px red
+(`--danger`) line, so it's obvious that money won't be tracked
+(`.review-row-removed .review-removed-summary`). This replaced an earlier
+plain dimmed state that hid the details entirely. Income rows hide
 category/tags and use the (editable) description as the Income `source`.
 This is for one-off deposits like a remote check deposit that the user
 decides on per row, rather than adding more `INCOME_KEYWORDS`.
@@ -2324,6 +2327,53 @@ selected year if it's older) selects, the same reveal-below pattern as
 `dateFilters.js`. Verified in headless Chromium (375px, dark) on both pages:
 February 2025 resolved to 2025-02-01 → 2025-02-28, and switching back to
 "Last month" hid the pickers.
+
+#### Date range shared between Overview and Transactions — 2026-10-03, right after
+
+Overview and Transactions now share one date-range selection
+(`dateFilter`/`customStart`/`customEnd`). Picking e.g. October 2026 on
+Overview and switching to Transactions shows the same range, and the reverse
+works too. It's implemented as `useSharedDateFilter()` in `hooks.js`, a tiny
+module-level store read via `useSyncExternalStore`, with setters defined at
+module level so they're stable in effect deps. It deliberately does not use
+localStorage: it lives only as long as the loaded page, so closing the app or
+doing a full reload goes back to Month to date. Only the date range is shared;
+owner/category/card/tag/amount/direction filters stay per-page. Overview's
+"selecting a tag jumps to All time" effect now writes to the shared range,
+so that carries over to Transactions too. Verified in headless Chromium by
+navigating via the bottom nav: a specific month set on Overview was kept on
+Transactions, a custom range set on Transactions was kept on Overview
+(including the From/To inputs), it survived a detour through Import, and a
+reload reset it to MTD.
+
+#### Transactions: switch existing transactions to Income — 2026-10-03, right after
+
+Both the single Edit dialog and the bulk "Edit selected" dialog on the
+Transactions screen now start with a **Transaction / Income** toggle
+(`KindToggle` in `Transactions.jsx`), mirroring the import review's per-row
+toggle. Choosing Income hides the normal fields. The single dialog offers an
+editable "Income source" (prefilled with the description), while bulk uses
+each transaction's own description. The save button then reads "Switch to
+income" / "Switch N to income".
+
+Backend: `POST /api/transactions/to-income/` `{ids, source?}` →
+`convert_transactions_to_income()` (`services.py`). It runs in one atomic DB
+transaction. Each transaction becomes an `Income` for its owner (amount =
+`abs(amount)`) and is deleted from the ledger, so its category, notes, and
+tags go with it. If an Income with the same owner/date/amount already exists,
+no second Income is created but the transaction is still removed, so nothing
+is double-counted. A re-upload of the same statement won't re-offer a
+switched deposit: `import_transactions()` already skips cash-in rows that
+match an existing Income. That skip only covers cash-in (negative-stored)
+rows, so a switched *positive* (spending-signed) transaction would be
+offered again on a re-upload.
+
+Verified in headless Chromium (375px, dark) with throwaway data: a single
+switch used a custom source, and a bulk switch of 2 included one row that
+already had a matching Income (it was removed with no duplicate Income
+created). The list updated immediately with Income rows and the DB matched.
+Separately, a re-upload containing the switched check deposit skipped it as
+a duplicate. Test data was deleted afterward.
 
 ### Phase 2 — Voice capture
 - [x] `MediaRecorder` audio capture in the PWA

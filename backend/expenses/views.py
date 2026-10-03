@@ -36,6 +36,7 @@ from .serializers import (
 from .services import (
     UnparseableFileError,
     commit_import_rows,
+    convert_transactions_to_income,
     extract_merchant_keyword,
     get_period_range,
     import_transactions,
@@ -423,6 +424,17 @@ class TransactionViewSet(
             return Response({"detail": "ids is required"}, status=400)
         deleted, _ = Transaction.objects.filter(id__in=ids).delete()
         return Response({"deleted": deleted})
+
+    @action(detail=False, methods=["post"], url_path="to-income")
+    def to_income(self, request):
+        """Switch transactions to Income - see convert_transactions_to_income."""
+        ids = request.data.get("ids") or []
+        if not ids:
+            return Response({"detail": "ids is required"}, status=400)
+        source = request.data.get("source")
+        if source is not None and not isinstance(source, str):
+            return Response({"detail": "source must be text"}, status=400)
+        return Response(convert_transactions_to_income(ids, source))
 
 
 class TransactionImportView(APIView):

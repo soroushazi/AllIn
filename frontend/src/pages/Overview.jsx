@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, AreaChart, Area, ReferenceLine } from 'recharts'
 import { api } from '../api'
-import { useCards, useCategories, useTags, useUsers } from '../hooks'
+import { useCards, useCategories, useTags, useSharedDateFilter, useUsers } from '../hooks'
 import DateFilter from '../DateFilter'
 import { getDateRange, parseISODateLocal, toISO } from '../dateFilters'
 
@@ -25,9 +25,8 @@ export default function Overview() {
   const [cards] = useCards()
   const [users] = useUsers()
   const [tags] = useTags()
-  const [dateFilter, setDateFilter] = useState('mtd')
-  const [customStart, setCustomStart] = useState('')
-  const [customEnd, setCustomEnd] = useState('')
+  // Shared with the other of Overview/Transactions - see useSharedDateFilter.
+  const { dateFilter, setDateFilter, customStart, setCustomStart, customEnd, setCustomEnd } = useSharedDateFilter()
   const [owner, setOwner] = useState('')
   const [cardId, setCardId] = useState('')
   const [categoryId, setCategoryId] = useState('')
@@ -50,7 +49,7 @@ export default function Overview() {
   // range again afterward, this only fires when the tag itself changes.
   useEffect(() => {
     if (tagId !== '') setDateFilter('all_time')
-  }, [tagId])
+  }, [tagId, setDateFilter])
 
   useEffect(() => {
     api.transactions

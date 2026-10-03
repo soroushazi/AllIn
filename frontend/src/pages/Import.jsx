@@ -709,6 +709,12 @@ function ImportStatement() {
                     import it anyway.
                   </p>
                 )}
+                {row.action === 'remove' && (
+                  <div className="review-removed-summary" aria-label="Will not be imported">
+                    <span className="review-removed-desc">{row.description}</span>
+                    <span>${Math.abs(Number(row.amount)).toFixed(2)}</span>
+                  </div>
+                )}
                 {row.action !== 'remove' && (
                   <>
                     <div className="filter-row">

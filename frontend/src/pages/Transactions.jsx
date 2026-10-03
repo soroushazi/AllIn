@@ -1,17 +1,36 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
-import { useCards, useCategories, useLocations, useTags, useUsers } from '../hooks'
+import { useCards, useCategories, useLocations, useTags, useSharedDateFilter, useUsers } from '../hooks'
 import DateFilter from '../DateFilter'
 import { getDateRange, toISO } from '../dateFilters'
 import ConfirmDialog from '../ConfirmDialog'
 import AddTransactionForm from '../AddTransactionForm'
 import { TagEditor, LocationCombobox } from '../Combobox'
 
+// Transaction / Income switch at the top of both edit dialogs - same idea
+// as the per-row toggle in the import review step. "Income" moves the
+// transaction(s) out of the ledger into Income (see
+// convert_transactions_to_income in services.py).
+function KindToggle({ mode, onChange }) {
+  return (
+    <div className="user-toggle">
+      <button type="button" className={mode === 'transaction' ? 'active' : ''} onClick={() => onChange('transaction')}>
+        Transaction
+      </button>
+      <button type="button" className={mode === 'income' ? 'active' : ''} onClick={() => onChange('income')}>
+        Income
+      </button>
+    </div>
+  )
+}
+
 function EditTransactionDialog({ transaction, categories, locationSuggestions, tagSuggestions, onSave, onCancel }) {
   const [category, setCategory] = useState(transaction.category ?? '')
   const [location, setLocation] = useState(transaction.location || '')
   const [notes, setNotes] = useState(transaction.notes || '')
   const [tags, setTags] = useState(transaction.tags)
+  const [mode, setMode] = useState('transaction')
+  const [incomeSource, setIncomeSource] = useState(transaction.description)
 
   useEffect(() => {
     function onKeyDown(e) {
@@ -37,37 +56,54 @@ function EditTransactionDialog({ transaction, categories, locationSuggestions, t
         <h3 className="dialog-title">Edit transaction</h3>
         <p className="dialog-message muted">{transaction.description}</p>
 
-        <label>
-          Category
-          <select value={category ?? ''} onChange={(e) => setCategory(e.target.value ? Number(e.target.value) : null)}>
-            <option value="">Uncategorized</option>
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <KindToggle mode={mode} onChange={setMode} />
 
-        <label>
-          Where
-          <LocationCombobox value={location} onChange={setLocation} suggestions={locationSuggestions} />
-        </label>
+        {mode === 'income' ? (
+          <>
+            <label>
+              Income source
+              <input type="text" value={incomeSource} onChange={(e) => setIncomeSource(e.target.value)} />
+            </label>
+            <p className="muted small">
+              ${Math.abs(Number(transaction.amount)).toFixed(2)} on {transaction.date} will be logged as income and
+              removed from transactions (its category, notes, and tags go with it).
+            </p>
+          </>
+        ) : (
+          <>
+            <label>
+              Category
+              <select value={category ?? ''} onChange={(e) => setCategory(e.target.value ? Number(e.target.value) : null)}>
+                <option value="">Uncategorized</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-        <label>
-          Detailed description
-          <textarea
-            rows={3}
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="e.g. dining out with Alex, celebrating a promotion"
-          />
-        </label>
+            <label>
+              Where
+              <LocationCombobox value={location} onChange={setLocation} suggestions={locationSuggestions} />
+            </label>
 
-        <label>
-          Tags
-          <TagEditor tags={tags} suggestions={tagSuggestions} onAdd={addTag} onRemove={removeTag} />
-        </label>
+            <label>
+              Detailed description
+              <textarea
+                rows={3}
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="e.g. dining out with Alex, celebrating a promotion"
+              />
+            </label>
+
+            <label>
+              Tags
+              <TagEditor tags={tags} suggestions={tagSuggestions} onAdd={addTag} onRemove={removeTag} />
+            </label>
+          </>
+        )}
 
         <div className="dialog-actions">
           <button type="button" onClick={onCancel}>
@@ -76,9 +112,13 @@ function EditTransactionDialog({ transaction, categories, locationSuggestions, t
           <button
             type="button"
             className="primary"
-            onClick={() => onSave({ category: category || null, location, notes, tags })}
+            onClick={() =>
+              mode === 'income'
+                ? onSave({ mode, source: incomeSource })
+                : onSave({ mode, category: category || null, location, notes, tags })
+            }
           >
-            Save
+            {mode === 'income' ? 'Switch to income' : 'Save'}
           </button>
         </div>
       </div>
@@ -94,6 +134,7 @@ function BulkEditDialog({ count, categories, tagSuggestions, onSave, onCancel })
   // the whole selection.
   const [categoryChoice, setCategoryChoice] = useState('')
   const [addTags, setAddTags] = useState([])
+  const [mode, setMode] = useState('transaction')
 
   useEffect(() => {
     function onKeyDown(e) {
@@ -113,35 +154,46 @@ function BulkEditDialog({ count, categories, tagSuggestions, onSave, onCancel })
     setAddTags(addTags.filter((t) => t !== name))
   }
 
-  const hasChanges = categoryChoice !== '' || addTags.length > 0
+  const hasChanges = mode === 'income' || categoryChoice !== '' || addTags.length > 0
 
   return (
     <div className="dialog-overlay" onClick={onCancel}>
       <div className="dialog-card card stack" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <h3 className="dialog-title">Edit {count} transaction{count === 1 ? '' : 's'}</h3>
-        <p className="dialog-message muted">
-          Only what you change here gets applied - anything left as "Don't change" stays as it was on each
-          transaction.
-        </p>
+        <KindToggle mode={mode} onChange={setMode} />
 
-        <label>
-          Category
-          <select value={categoryChoice} onChange={(e) => setCategoryChoice(e.target.value)}>
-            <option value="">Don't change</option>
-            <option value="none">Uncategorized</option>
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        {mode === 'income' ? (
+          <p className="muted small">
+            All {count} will be logged as income (each using its own description as the source) and removed from
+            transactions, along with their categories, notes, and tags.
+          </p>
+        ) : (
+          <>
+            <p className="dialog-message muted">
+              Only what you change here gets applied - anything left as "Don't change" stays as it was on each
+              transaction.
+            </p>
 
-        <label>
-          Add tag
-          <TagEditor tags={addTags} suggestions={tagSuggestions} onAdd={addTag} onRemove={removeTag} />
-        </label>
-        <p className="muted small">Each transaction's existing tags are kept - this only adds new ones.</p>
+            <label>
+              Category
+              <select value={categoryChoice} onChange={(e) => setCategoryChoice(e.target.value)}>
+                <option value="">Don't change</option>
+                <option value="none">Uncategorized</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Add tag
+              <TagEditor tags={addTags} suggestions={tagSuggestions} onAdd={addTag} onRemove={removeTag} />
+            </label>
+            <p className="muted small">Each transaction's existing tags are kept - this only adds new ones.</p>
+          </>
+        )}
 
         <div className="dialog-actions">
           <button type="button" onClick={onCancel}>
@@ -153,13 +205,14 @@ function BulkEditDialog({ count, categories, tagSuggestions, onSave, onCancel })
             disabled={!hasChanges}
             onClick={() =>
               onSave({
+                mode,
                 categoryProvided: categoryChoice !== '',
                 category: categoryChoice === 'none' ? null : categoryChoice ? Number(categoryChoice) : undefined,
                 addTags,
               })
             }
           >
-            Apply to {count}
+            {mode === 'income' ? `Switch ${count} to income` : `Apply to ${count}`}
           </button>
         </div>
       </div>
@@ -204,9 +257,8 @@ export default function Transactions() {
   const [tags, setTags] = useTags()
   const [locations, setLocations] = useLocations()
 
-  const [dateFilter, setDateFilter] = useState('mtd')
-  const [customStart, setCustomStart] = useState('')
-  const [customEnd, setCustomEnd] = useState('')
+  // Shared with the other of Overview/Transactions - see useSharedDateFilter.
+  const { dateFilter, setDateFilter, customStart, setCustomStart, customEnd, setCustomEnd } = useSharedDateFilter()
   const [owner, setOwner] = useState('')
   const [cardId, setCardId] = useState('')
   const [categoryId, setCategoryId] = useState('')
@@ -222,6 +274,8 @@ export default function Transactions() {
   const [error, setError] = useState(null)
   const [pendingDelete, setPendingDelete] = useState(null)
   const [pendingIncomeDelete, setPendingIncomeDelete] = useState(null)
+  // Bumped after switching transactions to income, to re-fetch the income list.
+  const [incomeReloadKey, setIncomeReloadKey] = useState(0)
   const [editingTransaction, setEditingTransaction] = useState(null)
   const [showAddForm, setShowAddForm] = useState(false)
   const [selectedIds, setSelectedIds] = useState(new Set())
@@ -279,7 +333,7 @@ export default function Transactions() {
       .list({ owner, date_from: toISO(rangeStart), date_to: toISO(rangeEnd) })
       .then(setIncomes)
       .catch((err) => setError(err.message))
-  }, [owner, rangeStart, rangeEnd, cashInEligible])
+  }, [owner, rangeStart, rangeEnd, cashInEligible, incomeReloadKey])
 
   // /api/income/ doesn't support amount_min/amount_max or search like
   // /api/transactions/ does, so both are applied client-side here instead -
@@ -314,10 +368,21 @@ export default function Transactions() {
     api.locations.list().then(setLocations).catch(() => {})
   }
 
+  async function switchToIncome(ids, source) {
+    await api.transactions.toIncome(ids, source)
+    const idSet = new Set(ids)
+    setTransactions((txs) => txs.filter((tx) => !idSet.has(tx.id)))
+    setIncomeReloadKey((k) => k + 1)
+  }
+
   async function handleSaveEdit(changes) {
     const t = editingTransaction
     setEditingTransaction(null)
     try {
+      if (changes.mode === 'income') {
+        await switchToIncome([t.id], changes.source)
+        return
+      }
       // Category changes go through recategorize() (not the generic PATCH
       // below) so it still teaches a MerchantRule, same as everywhere else
       // in this app - only call it if the category actually changed, so an
@@ -382,10 +447,15 @@ export default function Transactions() {
     setSelectedIds(new Set())
   }
 
-  async function handleBulkSave({ categoryProvided, category, addTags }) {
+  async function handleBulkSave({ mode, categoryProvided, category, addTags }) {
     const ids = [...selectedIds]
     setShowBulkEdit(false)
     try {
+      if (mode === 'income') {
+        await switchToIncome(ids)
+        setSelectedIds(new Set())
+        return
+      }
       const body = {}
       if (categoryProvided) body.category = category
       if (addTags.length > 0) body.add_tags = addTags

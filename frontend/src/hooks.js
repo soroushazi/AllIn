@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { api } from './api'
 
 export function useCategories() {
@@ -54,4 +54,34 @@ export function useUsers() {
   }, [])
 
   return [users, setUsers]
+}
+
+// The date range picked on Overview or Transactions, shared between the two
+// so switching tabs keeps the same range in view (e.g. pick October 2026 on
+// Overview, then check its transactions). Deliberately kept in plain module
+// memory, not localStorage: it lasts while the app is open and resets to
+// Month to date on a full reload or when the app is closed.
+let dateFilterState = { dateFilter: 'mtd', customStart: '', customEnd: '' }
+const dateFilterListeners = new Set()
+
+function setDateFilterState(patch) {
+  dateFilterState = { ...dateFilterState, ...patch }
+  dateFilterListeners.forEach((listener) => listener())
+}
+
+function subscribeDateFilter(listener) {
+  dateFilterListeners.add(listener)
+  return () => dateFilterListeners.delete(listener)
+}
+
+// Module-level so their identity never changes (safe in effect deps).
+const dateFilterSetters = {
+  setDateFilter: (dateFilter) => setDateFilterState({ dateFilter }),
+  setCustomStart: (customStart) => setDateFilterState({ customStart }),
+  setCustomEnd: (customEnd) => setDateFilterState({ customEnd }),
+}
+
+export function useSharedDateFilter() {
+  const state = useSyncExternalStore(subscribeDateFilter, () => dateFilterState)
+  return { ...state, ...dateFilterSetters }
 }
