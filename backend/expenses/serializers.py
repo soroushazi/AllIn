@@ -27,10 +27,31 @@ class CardSerializer(serializers.ModelSerializer):
 
 class IncomeSerializer(serializers.ModelSerializer):
     owner = serializers.SlugRelatedField(slug_field="username", queryset=User.objects.all())
+    # Same shape as TransactionSerializer.tags: names in, names out.
+    tags = serializers.ListField(child=serializers.CharField(), required=False, write_only=True)
 
     class Meta:
         model = Income
-        fields = ["id", "owner", "date", "amount", "source"]
+        fields = ["id", "owner", "date", "amount", "source", "tags"]
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        rep["tags"] = [t.name for t in instance.tags.all()]
+        return rep
+
+    def create(self, validated_data):
+        tag_names = validated_data.pop("tags", [])
+        income = super().create(validated_data)
+        if tag_names:
+            income.tags.set(get_or_create_tags(tag_names))
+        return income
+
+    def update(self, instance, validated_data):
+        tag_names = validated_data.pop("tags", None)
+        instance = super().update(instance, validated_data)
+        if tag_names is not None:
+            instance.tags.set(get_or_create_tags(tag_names))
+        return instance
 
 
 class NetWorthAccountSerializer(serializers.ModelSerializer):

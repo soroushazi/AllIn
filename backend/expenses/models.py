@@ -225,6 +225,7 @@ class Income(models.Model):
     date = models.DateField()
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     source = models.CharField(max_length=100, blank=True, default="Paycheck")
+    tags = models.ManyToManyField(Tag, blank=True, related_name="incomes")
 
     class Meta:
         ordering = ["-date", "-id"]

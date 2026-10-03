@@ -125,7 +125,10 @@ Why these choices, so they don't get re-litigated:
   than as a recurring weekly/monthly figure, since real paychecks vary payout
   to payout even on a fixed biweekly schedule. Full CRUD (`IncomeViewSet`,
   `/api/income/`) filtered by owner/date_from/date_to, same pattern as
-  Transaction. Feeds the Overview "Income vs spending" card.
+  Transaction. Feeds the Overview "Income vs spending" card. Also has
+  `tags` (M2M to Tag, same as Transaction, migration `0012_income_tags`),
+  editable from the Transactions screen, and carried over when an entry is
+  switched between Income and a transaction in either direction.
 - **VoiceDraft** — sketched here originally as a model, but built (2026-08-19)
   as a stateless draft instead, same precedent as import's
   `pending_transactions` (see the 2026-08-16 "Import: review-before-commit"
@@ -2381,6 +2384,53 @@ already had a matching Income (it was removed with no duplicate Income
 created). The list updated immediately with Income rows and the DB matched.
 Separately, a re-upload containing the switched check deposit skipped it as
 a duplicate. Test data was deleted afterward.
+
+#### Transactions: edit income entries (source, tags, switch to a transaction) — 2026-10-03, right after
+
+Income rows on the Transactions screen now have an **Edit** button and show
+their tag pills, next to the existing Delete. `EditIncomeDialog` in
+`Transactions.jsx` uses the same `KindToggle`, starting on Income, where the
+source and tags can be edited (`PATCH /api/income/<id>/`). Switching to
+**Transaction** asks for:
+- a description (prefilled from the source)
+- a card, restricted to the income owner's cards and preselected when there's only one
+- a category
+- a Cash in / Cash out choice
+
+Income only stores a positive amount, so that last choice has to be made
+explicitly. It defaults to Cash in (money that came in, e.g. a
+reimbursement, stored negative). Cash out stores it positive as spending.
+The "Switch to transaction" button stays disabled until a card is picked.
+
+The backend side is `POST /api/income/<id>/to-transaction/` →
+`convert_income_to_transaction()` (`services.py`). It runs atomically,
+creates a `source="manual"` Transaction, and deletes the Income. It refuses
+with a 400 if the card belongs to someone else or if an identical
+transaction (same dedupe key) already exists. Tags use the dialog's edited
+list, or the income's own tags if none are sent.
+
+**Deliberately does not teach a MerchantRule.** Testing showed a Zelle
+reimbursement teaching keyword "zelle from", which would have filed every
+future Zelle transaction under that category, and income descriptions are
+generic like that. In the other direction, `convert_transactions_to_income()`
+now carries tags over too (dialog copy updated to say tags are kept).
+
+Tag filtering now includes income: `IncomeViewSet` accepts `tag`, and both
+Transactions' and Overview's `cashInEligible` no longer exclude income when
+a tag filter is active. Instead they pass the tag through to the income list,
+so a trip/label tag finds tagged income too.
+
+Verified in headless Chromium (375px, dark) with throwaway data:
+- renaming and tagging an income entry
+- switching one entry to a Cash in transaction with a category and a new tag
+- switching another to Cash out
+- the Payroll tag filter showing only the tagged income
+- switching back to income with tags kept
+
+That run caught one bug: tags edited in the dialog were ignored on the
+switch, because the backend copied only the saved tags. This is now fixed.
+Also checked directly: duplicate refusal (the income is kept) and another
+person's card being refused. Test data was deleted afterward.
 
 ### Phase 2 — Voice capture
 - [x] `MediaRecorder` audio capture in the PWA

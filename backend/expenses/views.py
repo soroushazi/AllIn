@@ -36,6 +36,8 @@ from .serializers import (
 from .services import (
     UnparseableFileError,
     commit_import_rows,
+    IncomeConversionError,
+    convert_income_to_transaction,
     convert_transactions_to_income,
     extract_merchant_keyword,
     get_period_range,
@@ -89,7 +91,7 @@ class IncomeViewSet(viewsets.ModelViewSet):
     serializer_class = IncomeSerializer
 
     def get_queryset(self):
-        qs = Income.objects.select_related("owner").all()
+        qs = Income.objects.select_related("owner").prefetch_related("tags").all()
         params = self.request.query_params
 
         owner = params.get("owner")
@@ -104,7 +106,36 @@ class IncomeViewSet(viewsets.ModelViewSet):
         if date_to:
             qs = qs.filter(date__lte=date_to)
 
+        tag = params.get("tag")
+        if tag:
+            qs = qs.filter(tags__id=tag)
+
         return qs
+
+    @action(detail=True, methods=["post"], url_path="to-transaction")
+    def to_transaction(self, request, pk=None):
+        """Switch an Income entry to a transaction - see convert_income_to_transaction."""
+        income = self.get_object()
+        card = Card.objects.filter(pk=request.data.get("card")).first()
+        if card is None:
+            return Response({"detail": "Pick a card for this transaction."}, status=400)
+        category = None
+        if request.data.get("category"):
+            category = Category.objects.filter(pk=request.data["category"]).first()
+            if category is None:
+                return Response({"detail": "That category no longer exists."}, status=400)
+        try:
+            created = convert_income_to_transaction(
+                income,
+                card,
+                request.data.get("description"),
+                category=category,
+                cash_out=request.data.get("direction") == "out",
+                tag_names=request.data.get("tags") if isinstance(request.data.get("tags"), list) else None,
+            )
+        except IncomeConversionError as e:
+            return Response({"detail": str(e)}, status=400)
+        return Response(TransactionSerializer(created).data)
 
 
 class NetWorthAccountViewSet(viewsets.ModelViewSet):

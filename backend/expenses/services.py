@@ -976,20 +976,22 @@ def convert_transactions_to_income(ids, source=None):
     was imported as a regular transaction): each becomes an Income entry for
     the transaction's owner (amount = abs(amount), source = the given source
     or else the transaction's own description) and is removed from the
-    ledger. If an Income with the same owner/date/amount already exists
-    (same dedupe rule as import), the transaction is still removed but no
-    second Income is created, so nothing gets counted twice. All-or-nothing.
+    ledger. Tags carry over. If an Income with the same owner/date/amount
+    already exists (same dedupe rule as import), the transaction is still
+    removed but no second Income is created, so nothing gets counted twice.
+    All-or-nothing.
     """
     from django.db import transaction as db_transaction
 
     with db_transaction.atomic():
-        transactions = list(Transaction.objects.filter(id__in=ids).select_related("owner"))
+        transactions = list(Transaction.objects.filter(id__in=ids).select_related("owner").prefetch_related("tags"))
         existing_keys = set(
             Income.objects.filter(
                 owner_id__in={t.owner_id for t in transactions}, date__in={t.date for t in transactions}
             ).values_list("owner_id", "date", "amount")
         )
         new_incomes = []
+        income_tags = []  # aligned by index to new_incomes
         already_logged = 0
         for t in transactions:
             key = (t.owner_id, t.date, abs(t.amount))
@@ -997,6 +999,7 @@ def convert_transactions_to_income(ids, source=None):
                 already_logged += 1
                 continue
             existing_keys.add(key)
+            income_tags.append(list(t.tags.all()))
             new_incomes.append(
                 Income(
                     owner=t.owner,
@@ -1006,9 +1009,58 @@ def convert_transactions_to_income(ids, source=None):
                 )
             )
         Income.objects.bulk_create(new_incomes)
+        for income, tags in zip(new_incomes, income_tags):
+            if tags:
+                income.tags.set(tags)
         Transaction.objects.filter(id__in=[t.id for t in transactions]).delete()
 
     return {"converted": len(new_incomes), "already_logged": already_logged}
+
+
+class IncomeConversionError(Exception):
+    """Raised by convert_income_to_transaction for a request it can't honor
+    (e.g. the card belongs to someone else) - the view turns it into a 400."""
+
+
+def convert_income_to_transaction(income, card, description, category=None, cash_out=False, tag_names=None):
+    """The reverse of convert_transactions_to_income: move one Income entry
+    into the transaction ledger on the given card (which must belong to the
+    income's owner). Income only stores a positive amount, so the direction
+    is chosen explicitly: Cash in by default (money that came in, e.g. a
+    refund or reimbursement, stored negative like any other cash-in row) or
+    Cash out (stored positive, counted as spending). Tags carry over (or
+    tag_names replaces them, when the user edited tags while switching).
+    Unlike a manual add, picking a category here does NOT teach a
+    MerchantRule: income descriptions are generic ("Zelle from ...", "Check
+    Deposit ..."), so the learned keyword (e.g. "zelle from") would wrongly
+    categorize every future transaction sharing that wording.
+    Refuses (rather than silently creating a second copy) if an identical
+    transaction already exists. All-or-nothing.
+    """
+    from django.db import transaction as db_transaction
+
+    if card.owner_id != income.owner_id:
+        raise IncomeConversionError("That card belongs to someone else.")
+    description = (description or "").strip() or income.source or "Income"
+    amount = abs(income.amount) if cash_out else -abs(income.amount)
+    dedupe_key = Transaction.compute_dedupe_key(income.owner_id, card.id, income.date, description, amount)
+    if Transaction.objects.filter(dedupe_key=dedupe_key).exists():
+        raise IncomeConversionError("An identical transaction is already recorded on that card.")
+
+    with db_transaction.atomic():
+        created = Transaction.objects.create(
+            owner_id=income.owner_id,
+            card=card,
+            date=income.date,
+            description=description,
+            amount=amount,
+            category=category,
+            source=Transaction.Source.MANUAL,
+            dedupe_key=dedupe_key,
+        )
+        created.tags.set(get_or_create_tags(tag_names) if tag_names is not None else income.tags.all())
+        income.delete()
+    return created
 
 
 def commit_import_rows(rows):

@@ -92,12 +92,13 @@ export default function Overview() {
   // judged against spending on every card, not just one), so budget/income
   // comparisons don't mean anything scoped to one card either.
   const isCardFiltered = cardId !== ''
-  // Income has no card/category/tag of its own, so it can't meaningfully
-  // satisfy a filter on any of those - fold it into "Cash in" only when
-  // none of them narrow the view. Amount is different: Income does have a
+  // Income has no card/category of its own, so it can't meaningfully
+  // satisfy a filter on either - fold it into "Cash in" only when neither
+  // narrows the view. Income does have tags, so a tag filter is passed
+  // through to the income list instead of excluding it. Amount is different: Income does have a
   // real amount, so a min/max filter is applied to it too (client-side,
   // below) rather than excluding it outright.
-  const cashInEligible = (isCashInOnly || isCombined) && !isCategoryFiltered && !isTagFiltered && !isCardFiltered
+  const cashInEligible = (isCashInOnly || isCombined) && !isCategoryFiltered && !isCardFiltered
 
   useEffect(() => {
     // Two independent reasons to fetch income: the existing "Income vs
@@ -112,10 +113,10 @@ export default function Overview() {
       return
     }
     api.income
-      .list({ owner, date_from: toISO(rangeStart), date_to: toISO(rangeEnd) })
+      .list({ owner, tag: tagId, date_from: toISO(rangeStart), date_to: toISO(rangeEnd) })
       .then(setIncomes)
       .catch((err) => setError(err.message))
-  }, [owner, rangeStart, rangeEnd, isMonthlyPeriod, isCategoryFiltered, isAmountFiltered, isTagFiltered, isCardFiltered, cashInEligible])
+  }, [owner, tagId, rangeStart, rangeEnd, isMonthlyPeriod, isCategoryFiltered, isAmountFiltered, isTagFiltered, isCardFiltered, cashInEligible])
 
   const categoryById = useMemo(() => Object.fromEntries(categories.map((c) => [c.id, c])), [categories])
 

@@ -121,7 +121,9 @@ export const api = {
   income: {
     list: (params) => request(`/api/income/${buildQuery(params)}`),
     create: (data) => request('/api/income/', { method: 'POST', body: data }),
+    update: (id, data) => request(`/api/income/${id}/`, { method: 'PATCH', body: data }),
     remove: (id) => request(`/api/income/${id}/`, { method: 'DELETE' }),
+    toTransaction: (id, data) => request(`/api/income/${id}/to-transaction/`, { method: 'POST', body: data }),
   },
 
   import: (formData) => request('/api/import/', { method: 'POST', body: formData, isForm: true }),
