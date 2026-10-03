@@ -18,7 +18,7 @@ export function parseISODateLocal(iso) {
   return new Date(y, m - 1, d)
 }
 
-const MONTH_NAMES = [
+export const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ]
@@ -27,19 +27,9 @@ function monthRange(year, monthIndex) {
   return [new Date(year, monthIndex, 1), new Date(year, monthIndex + 1, 0)]
 }
 
-// Last 12 months (including the current one), newest first - for the
-// "specific month" picker.
-export function getRecentMonthOptions(count = 12) {
-  const today = new Date()
-  const options = []
-  for (let i = 0; i < count; i++) {
-    const d = new Date(today.getFullYear(), today.getMonth() - i, 1)
-    options.push({
-      value: `month:${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
-      label: `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`,
-    })
-  }
-  return options
+// "month:YYYY-MM" - the dateFilter value for one specific calendar month.
+export function monthFilterValue(year, monthIndex) {
+  return `month:${year}-${String(monthIndex + 1).padStart(2, '0')}`
 }
 
 export function getDateRange(dateFilter, customStart, customEnd) {

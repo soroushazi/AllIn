@@ -2215,6 +2215,116 @@ call kept the first call's tag), both endpoints 400 on a missing `ids`.
 data (2 users, 3 categories, 4 transactions) confirmed unaffected
 throughout.
 
+#### UHFCU income: Villanova paychecks + dividends — 2026-10-03
+
+Shiva's UHFCU export carries her paychecks as "ACH Deposit VILLANOVA" and
+monthly "Dividend Deposit" rows. Added both to `INCOME_KEYWORDS`
+(`services.py`): `("villanova", "Paycheck (Villanova)")` and
+`("dividend", "Dividend")` - same mechanism as the WSB LLC rule, so matched
+rows become `Income` (owner = card owner) instead of transactions, on any
+card. Verified against the user's real sample (`transactions.csv`) with a
+throwaway user + UHFCU debit/credit pair: all 5 Villanova + 2 dividend rows
+logged to Income, 6 Amex/Discover payments and 2 P2P transfers excluded as
+before, only the remote check deposit left for review, and a re-upload
+added 0 new Income rows (dedupe holds). Real data unaffected.
+
+#### Import review: per-row Transaction/Income/Remove toggle + tags — 2026-10-03, right after
+
+Each row in the import review step now has a three-way `.user-toggle`
+(**Transaction / Income / Remove**) plus a `TagEditor` (transaction rows
+only). This replaced the separate "Remove / Approve anyway" toggle for
+possible duplicates: flagged rows now just default to `action: 'remove'`
+on the same toggle. A Removed row stays visible but dimmed
+(`.review-row-removed`) so it can be switched back. Income rows hide
+category/tags and use the (editable) description as the Income `source`.
+This is for one-off deposits like a remote check deposit that the user
+decides on per row, rather than adding more `INCOME_KEYWORDS`.
+
+Backend: `commit_import_rows()` accepts `as_income` (creates `Income` for the
+card's owner with `abs(amount)`, deduped on owner/date/amount, returns
+`income_logged`) and `tags` (case-insensitive get-or-create, applied after
+`bulk_create`). `get_or_create_tags()` moved from `serializers.py` to
+`services.py` (serializers/views still import it from there).
+`import_transactions()` also skips a cash-in pending row that already
+matches an existing Income on owner/date/amount and counts it as a
+duplicate, so a deposit switched to income isn't offered for review again
+on a re-upload. Removed rows aren't remembered and do reappear on a
+re-upload, by design.
+
+Verified via headless Playwright at 375px, light and dark, with a throwaway
+user/UHFCU card pair and the real `transactions.csv` plus 2 synthetic
+purchases. The check deposit was switched to Income. Trader Joe's got two
+tags, one of them left as an uncommitted draft to exercise the
+commit-on-blur path, and both were saved. The third row was removed. The
+DB matched exactly, and a re-upload offered only the removed row. Test data
+was deleted afterward and real data confirmed unchanged. `npm run
+build`/`npm run lint` and `python manage.py check` were clean.
+
+#### Category hints: bank wording and big-name merchants map onto our categories — 2026-10-03, right after
+
+The user saw bank labels like "Restaurant-Bar & Café", "Transportation-Fuel",
+and grocery chains (Sam's Club, Giant, Walmart) arriving as "(new)"
+placeholder categories instead of our curated Eating Out, Mater (the car),
+and Groceries. There were two causes. (1) The bank label only matched our
+categories on an exact name. Worse, once a label had been accepted as a
+placeholder Category in an earlier import, that placeholder then
+exact-matched on every later import, so the LLM fallback never even ran.
+(2) phi3 alone wasn't reliably mapping the rest.
+
+The fix is `CATEGORY_HINTS` + `categorize_by_hint()` (`services.py`): an
+ordered list of (regex, category name) pairs, searched across the bank label
+and description together. The first match wins, and car costs come first so
+"Transportation-Fuel" → Mater rather than Transportation. The categories:
+- Fuel, gas brands, car wash, auto repair, etc. → Mater
+- restaurant/bar/café/coffee, plus the `TST*` Toast prefix → Eating Out
+- grocer/supermarket wording and big grocery/warehouse chains → Groceries
+- "travel" (e.g. Amex "Travel-Airline", "Travel-Lodging") → Travel
+- "transportation" → Transportation
+
+Resolution order for import is now: MerchantRule → hint → exact bank label →
+LLM → "(new)". Hints also feed the duplicate-category backfill and voice,
+where they run after merchant rules and before the LLM's `category_guess`.
+A hint never creates a category; one whose target doesn't exist is skipped.
+Hint-resolved review rows carry `category_source: "hint"` and show a "double
+check" note in `Import.jsx`. Verified with a direct
+matrix (incl. negatives like T-Mobile, Barnes & Noble, Shelly's Salon) and a
+full `import_transactions()` run confirming a learned MerchantRule still
+beats a hint. Placeholder categories and transactions already assigned to
+them on Oracle were not touched.
+
+#### Import review: "Most used on this card" categories first — 2026-10-03, right after
+
+The import review's category dropdown is now split into two `<optgroup>`s:
+"Most used on this card" (top 5) and then "All categories" (every category,
+alphabetical, including the frequent ones again so the full list stays
+complete). Frequency isn't tracked separately. It's derived from that
+card's own categorized transactions over the last 180 days, because every
+category picked during review or corrected later already lives there. The
+backend side is `frequent_categories_by_card()` in `services.py` (constants
+`FREQUENT_CATEGORIES_PER_CARD`/`_LOOKBACK_DAYS`), returned as
+`frequent_categories: {card_id: [category_id, ...]}` on the import preview.
+It's per card, so a UHFCU debit/credit split shows each row its own card's
+list. A card with no history just gets the plain alphabetical list. The
+frontend side is `CategoryOptions` in `Import.jsx`. Verified in headless
+Chromium with a throwaway card: categories were ordered by count, one used
+only 9 months ago was excluded from "Most used", and picking from either
+group worked. Test data was deleted afterward.
+
+#### Date filter: "Specific month..." with Month + Year pickers — 2026-10-03, right after
+
+The shared `DateFilter.jsx` (used by Overview and Transactions) no longer
+lists the last 12 months inline in the main date `<select>`, which made it
+long and awkward on a phone. There is now a single "Specific month..."
+entry. Picking it defaults to the current month and reveals a second row
+with Month (January-December) and Year (this year back five years, plus the
+selected year if it's older) selects, the same reveal-below pattern as
+"Custom range...". The stored value is still `month:YYYY-MM`, so Overview's
+`isMonthlyPeriod` and everything downstream are unchanged.
+`getRecentMonthOptions()` was replaced by `monthFilterValue()` in
+`dateFilters.js`. Verified in headless Chromium (375px, dark) on both pages:
+February 2025 resolved to 2025-02-01 → 2025-02-28, and switching back to
+"Last month" hid the pickers.
+
 ### Phase 2 — Voice capture
 - [x] `MediaRecorder` audio capture in the PWA
 - [x] Upload endpoint + self-hosted Whisper/`faster-whisper` for transcription

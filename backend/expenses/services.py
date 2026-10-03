@@ -8,9 +8,10 @@ from decimal import Decimal, InvalidOperation
 import pandas as pd
 import requests
 from django.contrib.auth.models import User
+from django.db.models import Count
 from django.utils import timezone
 
-from .models import Card, Category, ColumnMapping, Income, MerchantRule, Transaction
+from .models import Card, Category, ColumnMapping, Income, MerchantRule, Tag, Transaction
 
 
 def extract_merchant_keyword(description):
@@ -92,6 +93,8 @@ def is_transfer_description(description):
 # substring; each entry is (keyword, income source label).
 INCOME_KEYWORDS = [
     ("wsb llc", "Paycheck (WSB LLC)"),
+    ("villanova", "Paycheck (Villanova)"),
+    ("dividend", "Dividend"),
 ]
 
 
@@ -116,6 +119,76 @@ def categorize_by_merchant(description):
 # deliberately neutral, unpicked-looking color so these read as "not yet
 # reviewed" next to the user's own vividly-colored categories.
 AUTO_CATEGORY_COLOR = "#9a9890"
+
+
+# Built-in defaults that map common bank-category wording and well-known
+# merchant names onto OUR curated categories, e.g. Amex's "Transportation-Fuel"
+# or "Restaurant-Bar & Café", or a "SAMS CLUB #1234" description. Without
+# this, the bank's label only matches if it's spelled exactly like one of our
+# category names, and otherwise is offered as a brand-new "(new)" category.
+# Checked after learned MerchantRules (a user's own correction always wins)
+# and before the bank-label/LLM fallbacks. Each entry is (regex, category
+# name), searched case-insensitively across the bank label and description
+# together. The first match wins, so the more specific car/fuel patterns come
+# before the general "transportation" one. A hint whose category doesn't
+# exist (e.g. renamed) is skipped rather than creating anything.
+CATEGORY_HINTS = [
+    # Car costs -> Mater (our car). Fuel has to be checked before
+    # "transportation", since Amex labels gas as "Transportation-Fuel".
+    (r"\bfuel|\bgasoline\b|\bgas station|\bexxon|\bmobil\b|\bshell\b|\bsunoco\b|\bchevron\b|\bcitgo\b"
+     r"|\bvalero\b|\bcar wash|\bauto repair|\bautomotive\b|\bauto parts|\bautozone\b|\bjiffy lube"
+     r"|\bvalvoline\b|\bpep boys\b|\bfirestone\b|\bmidas\b|\boil change", "Mater"),
+    # Restaurants. "TST*" is the prefix Toast-powered restaurants put on
+    # card descriptions ("TST* SOME CAFE").
+    (r"\brestaurant|\bbars?\b|\bcaf[eé]|\bcoffee\b|\bdining\b|\bfast food|\btst\*", "Eating Out"),
+    # Grocery wording in a bank label, plus big-name grocery/warehouse stores.
+    (r"\bgrocer|\bsupermarket|\bsam'?s club|\bwal-?mart|\bgiant\b|\bcostco\b|\btrader joe|\bwhole foods"
+     r"|\baldi\b|\blidl\b|\bwegmans\b|\bsafeway\b|\bh ?mart\b|\bbj'?s wholesale|\bfood lion\b|\bacme markets", "Groceries"),
+    # Skips "Travelers" (the insurance company) and Discover's combined
+    # "Travel/ Entertainment" label, which also covers movies, concerts, etc.
+    (r"\btravel(?!ers\b)(?!\s*/\s*entertainment)", "Travel"),
+    (r"\btransportation\b", "Transportation"),
+]
+_COMPILED_CATEGORY_HINTS = [(re.compile(pattern, re.IGNORECASE), name) for pattern, name in CATEGORY_HINTS]
+
+
+FREQUENT_CATEGORIES_PER_CARD = 5
+FREQUENT_CATEGORIES_LOOKBACK_DAYS = 180
+
+
+def frequent_categories_by_card(card_ids):
+    """{card_id: [category_id, ...]} - each card's most-used categories over
+    the last ~6 months, most used first. Drives the "Most used" section of
+    the import review's category dropdown. Derived from the card's own
+    transactions rather than tracked separately, since every category picked
+    during review (or corrected later) already lives there."""
+    since = timezone.localdate() - timedelta(days=FREQUENT_CATEGORIES_LOOKBACK_DAYS)
+    counts = (
+        Transaction.objects.filter(card_id__in=card_ids, category__isnull=False, date__gte=since)
+        .values("card_id", "category_id")
+        .annotate(n=Count("id"))
+        .order_by("card_id", "-n", "category_id")
+    )
+    result = {}
+    for row in counts:
+        ids = result.setdefault(row["card_id"], [])
+        if len(ids) < FREQUENT_CATEGORIES_PER_CARD:
+            ids.append(row["category_id"])
+    return result
+
+
+def categorize_by_hint(*texts):
+    """Match the given texts (bank label, description, location - any can be
+    None) against CATEGORY_HINTS and return the existing Category, or None."""
+    combined = " | ".join(t for t in texts if t)
+    if not combined:
+        return None
+    for pattern, category_name in _COMPILED_CATEGORY_HINTS:
+        if pattern.search(combined):
+            category = Category.objects.filter(name__iexact=category_name).first()
+            if category is not None:
+                return category
+    return None
 
 
 def get_or_create_category_from_label(label):
@@ -427,6 +500,8 @@ def parse_voice_transcript(transcript):
         category = categorize_by_merchant(location)
     if category is None and description:
         category = categorize_by_merchant(description)
+    if category is None:
+        category = categorize_by_hint(location, description)
     if category is None and parsed.get("category_guess"):
         category = Category.objects.filter(name__iexact=parsed["category_guess"]).first()
     if category is not None:
@@ -732,12 +807,26 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
     to_backfill = []
     duplicates = 0
     needs_llm_indices = []
+    # A cash-in row the user turned into Income during an earlier review (see
+    # commit_import_rows' "as_income") never got a Transaction/dedupe_key, so
+    # on a re-upload it would otherwise be offered for review all over again.
+    # Treat an existing Income on the same owner/date/amount as already handled.
+    existing_income_keys_for_review = set(
+        Income.objects.filter(
+            owner_id__in={r["card"].owner_id for r in parsed_rows}, date__in={r["date"] for r in parsed_rows}
+        ).values_list("owner_id", "date", "amount")
+    )
     for r in parsed_rows:
+        if r["amount"] < 0 and (r["card"].owner_id, r["date"], -r["amount"]) in existing_income_keys_for_review:
+            duplicates += 1
+            continue
         existing = existing_transactions.get(r["dedupe_key"])
         if existing:
             duplicates += 1
             if existing.category_id is None:
-                resolved = categorize_by_merchant(r["description"])
+                resolved = categorize_by_merchant(r["description"]) or categorize_by_hint(
+                    r["category_label"], r["description"]
+                )
                 if resolved is None and r["category_label"]:
                     resolved = get_or_create_category_from_label(r["category_label"])
                 if resolved is not None:
@@ -745,6 +834,11 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
                     to_backfill.append(existing)
             continue
         category = categorize_by_merchant(r["description"])
+        category_source = None
+        if category is None:
+            category = categorize_by_hint(r["category_label"], r["description"])
+            if category is not None:
+                category_source = "hint"
         category_label_for_row = None
         if category is None and r["category_label"]:
             category = find_category_by_label(r["category_label"])
@@ -764,7 +858,7 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
                 "category_id": category.id if category else None,
                 "category_name": category.name if category else None,
                 "category_label": category_label_for_row,
-                "category_source": None,
+                "category_source": category_source,
                 "possible_duplicate": None,
             }
         )
@@ -849,6 +943,7 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
     return {
         "mapping_required": False,
         "pending_transactions": pending_transactions,
+        "frequent_categories": frequent_categories_by_card({p["card_id"] for p in pending_transactions}),
         "duplicates_skipped": duplicates,
         "unparseable_rows_skipped": skipped_unparseable,
         "payments_excluded": skipped_payments,
@@ -857,6 +952,23 @@ def import_transactions(card, uploaded_file, mapping_override=None, force_remap=
         "income_added": added_income,
         "backfilled_categories": len(to_backfill),
     }
+
+
+def get_or_create_tags(names):
+    """Case-insensitive get-or-create per name, same spirit as
+    get_or_create_category_from_label - reuses an existing
+    tag regardless of casing (so "Hawaii" and "hawaii" don't split into two)
+    but preserves whatever casing the first use established."""
+    tags = []
+    for raw in names:
+        name = raw.strip()
+        if not name:
+            continue
+        tag = Tag.objects.filter(name__iexact=name).first()
+        if tag is None:
+            tag = Tag.objects.create(name=name)
+        tags.append(tag)
+    return tags
 
 
 def commit_import_rows(rows):
@@ -887,9 +999,36 @@ def commit_import_rows(rows):
         )
     )
 
+    income_prepared = [r for r in prepared if r.get("as_income")]
+    existing_income_keys = set(
+        Income.objects.filter(
+            owner_id__in={r["card"].owner_id for r in income_prepared}, date__in={r["date"] for r in income_prepared}
+        ).values_list("owner_id", "date", "amount")
+    )
+
     new_transactions = []
+    transaction_tags = []  # tag names aligned by index to new_transactions
+    new_incomes = []
     duplicates = 0
     for r in prepared:
+        if r.get("as_income"):
+            # The user switched this row from spending to income during
+            # review (e.g. a check deposit) - log it to Income instead of the
+            # ledger, same (owner, date, amount) dedupe as auto-detected income.
+            income_key = (r["card"].owner_id, r["date"], abs(r["amount"]))
+            if income_key in existing_income_keys:
+                duplicates += 1
+                continue
+            existing_income_keys.add(income_key)
+            new_incomes.append(
+                Income(
+                    owner=r["card"].owner,
+                    date=r["date"],
+                    amount=abs(r["amount"]),
+                    source=str(r["description"]).strip() or r["original_description"],
+                )
+            )
+            continue
         if r["dedupe_key"] in existing_keys:
             duplicates += 1
             continue
@@ -911,11 +1050,17 @@ def commit_import_rows(rows):
                 dedupe_key=r["dedupe_key"],
             )
         )
+        transaction_tags.append(r.get("tags") or [])
 
     Transaction.objects.bulk_create(new_transactions)
+    Income.objects.bulk_create(new_incomes)
+    for transaction, tag_names in zip(new_transactions, transaction_tags):
+        if tag_names:
+            transaction.tags.set(get_or_create_tags(tag_names))
 
     return {
         "imported": len(new_transactions),
+        "income_logged": len(new_incomes),
         "duplicates_skipped": duplicates,
         "uncategorized": sum(1 for t in new_transactions if t.category_id is None),
     }

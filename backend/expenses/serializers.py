@@ -2,30 +2,13 @@ from django.contrib.auth.models import User
 from rest_framework import serializers
 
 from .models import Card, Category, Income, MerchantRule, NetWorthAccount, NetWorthEntry, Tag, Transaction, YearlyExpense
-from .services import extract_merchant_keyword
+from .services import extract_merchant_keyword, get_or_create_tags
 
 
 class TagSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tag
         fields = ["id", "name"]
-
-
-def get_or_create_tags(names):
-    """Case-insensitive get-or-create per name, same spirit as
-    get_or_create_category_from_label in services.py - reuses an existing
-    tag regardless of casing (so "Hawaii" and "hawaii" don't split into two)
-    but preserves whatever casing the first use established."""
-    tags = []
-    for raw in names:
-        name = raw.strip()
-        if not name:
-            continue
-        tag = Tag.objects.filter(name__iexact=name).first()
-        if tag is None:
-            tag = Tag.objects.create(name=name)
-        tags.append(tag)
-    return tags
 
 
 class CategorySerializer(serializers.ModelSerializer):

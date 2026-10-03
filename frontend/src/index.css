@@ -780,3 +780,9 @@ button:disabled {
     box-shadow: 0 0 0 14px rgba(214, 69, 69, 0);
   }
 }
+
+/* Import review: a row the user chose to remove stays visible (so it can be
+   switched back) but reads as dimmed/inactive. */
+.review-row-removed {
+  opacity: 0.55;
+}

@@ -3,6 +3,7 @@ import { api } from '../api'
 import { useCards, useCategories, useLocations, useTags, useUsers } from '../hooks'
 import AddTransactionForm from '../AddTransactionForm'
 import ConfirmDialog from '../ConfirmDialog'
+import { TagEditor } from '../Combobox'
 
 const EMPTY_MAPPING = {
   date_column: '',
@@ -238,21 +239,47 @@ function AddTransaction() {
   )
 }
 
+// Category <option>s for the import review dropdown: the card's most-used
+// categories first (see frequent_categories_by_card in services.py), then a
+// divider and every category alphabetically. Most-used ones are repeated in
+// the full list so it stays complete and predictable.
+function CategoryOptions({ categories, frequentIds }) {
+  const byId = new Map(categories.map((c) => [c.id, c]))
+  const frequent = (frequentIds || []).map((id) => byId.get(id)).filter(Boolean)
+  const all = [...categories].sort((a, b) => a.name.localeCompare(b.name))
+  const options = (list, prefix) =>
+    list.map((c) => (
+      <option key={`${prefix}-${c.id}`} value={c.id}>
+        {c.name}
+      </option>
+    ))
+  if (frequent.length === 0) return options(all, 'all')
+  return (
+    <>
+      <optgroup label="Most used on this card">{options(frequent, 'frequent')}</optgroup>
+      <optgroup label="All categories">{options(all, 'all')}</optgroup>
+    </>
+  )
+}
+
 function draftFromPendingRow(row) {
   return {
     ...row,
     selectedCategoryId: row.category_id ? String(row.category_id) : row.category_label ? '__new__' : '',
-    // Flagged rows default to "Remove" (excluded from the import) - the
-    // whole point of flagging is to avoid silently double-counting spending
-    // that's already been recorded by hand or by voice, so the safer
-    // default is to leave it out unless the user explicitly says otherwise.
-    includeDespiteDuplicate: false,
+    tags: [],
+    // 'transaction' | 'income' | 'remove'. Rows flagged as a possible
+    // duplicate default to "Remove" - the whole point of flagging is to avoid
+    // silently double-counting spending that's already been recorded by hand
+    // or by voice, so the safer default is to leave it out unless the user
+    // explicitly says otherwise.
+    action: row.possible_duplicate ? 'remove' : 'transaction',
   }
 }
 
 function ImportStatement() {
   const [cards] = useCards()
   const [categories] = useCategories()
+  const [tagOptions] = useTags()
   const [cardId, setCardId] = useState('')
   const [file, setFile] = useState(null)
   const [remap, setRemap] = useState(false)
@@ -334,12 +361,11 @@ function ImportStatement() {
     setCommitting(true)
     setError(null)
     try {
-      // Rows flagged as a possible duplicate of an existing manual/voice
-      // entry are left out entirely unless the user explicitly chose to
-      // include them anyway - same "never silently auto-commit" spirit as
-      // the rest of this review step, just applied per-row.
+      // Removed rows (including flagged possible duplicates left at their
+      // "Remove" default) are left out entirely - same "never silently
+      // auto-commit" spirit as the rest of this review step, just per-row.
       const rows = pendingTransactions
-        .filter((r) => !r.possible_duplicate || r.includeDespiteDuplicate)
+        .filter((r) => r.action !== 'remove')
         .map((r) => {
           const row = {
             date: r.date,
@@ -348,6 +374,11 @@ function ImportStatement() {
             amount: r.amount,
             card_id: r.card_id,
           }
+          if (r.action === 'income') {
+            row.as_income = true
+            return row
+          }
+          row.tags = r.tags
           if (r.selectedCategoryId === '__new__') {
             row.category_label = r.category_label
           } else if (r.selectedCategoryId) {
@@ -359,6 +390,7 @@ function ImportStatement() {
       setResult({
         ...previewMeta,
         imported: commitResult.imported,
+        income_logged: commitResult.income_logged,
         // Both stages can skip duplicates - preview skips rows already
         // imported before this upload, commit re-checks in case another
         // review session committed the same rows in between. Add them
@@ -387,9 +419,8 @@ function ImportStatement() {
 
   const selectedCard = cards.find((c) => c.id === Number(cardId))
   const siblingCards = selectedCard ? cards.filter((c) => c.owner === selectedCard.owner && c.id !== selectedCard.id) : []
-  const importCount = pendingTransactions
-    ? pendingTransactions.filter((r) => !r.possible_duplicate || r.includeDespiteDuplicate).length
-    : 0
+  const importCount = pendingTransactions ? pendingTransactions.filter((r) => r.action !== 'remove').length : 0
+  const tagSuggestions = tagOptions.map((t) => t.name)
 
   return (
     <div className="stack">
@@ -638,8 +669,8 @@ function ImportStatement() {
           <div className="card stack">
             <p>
               <strong>{pendingTransactions.length}</strong> new transaction{pendingTransactions.length === 1 ? '' : 's'}{' '}
-              ready to review. Edit the description or category on any row, then approve to add them to the ledger -
-              nothing below is saved yet.
+              ready to review. Edit the description, category, or tags on any row, switch a deposit to income, or
+              remove a row - then approve. Nothing below is saved yet.
             </p>
             <p className="muted small">
               <button type="button" className="link-button" onClick={reset}>
@@ -650,59 +681,80 @@ function ImportStatement() {
 
           <ul className="category-list">
             {pendingTransactions.map((row) => (
-              <li key={row.key} className="category-row card stack">
+              <li key={row.key} className={`category-row card stack${row.action === 'remove' ? ' review-row-removed' : ''}`}>
                 <div className="muted small">
                   {row.date} - {row.card_name}
                 </div>
-                <input
-                  type="text"
-                  value={row.description}
-                  onChange={(e) => updateDraftRow(row.key, { description: e.target.value })}
-                />
-                <div className="filter-row">
-                  <select
-                    value={row.selectedCategoryId}
-                    onChange={(e) => updateDraftRow(row.key, { selectedCategoryId: e.target.value })}
-                  >
-                    <option value="">Uncategorized</option>
-                    {row.category_label && <option value="__new__">{row.category_label} (new)</option>}
-                    {categories.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
-                  <div className="amount" style={{ display: 'flex', alignItems: 'center' }}>
-                    ${Number(row.amount).toFixed(2)}
-                  </div>
+                <div className="user-toggle">
+                  {[
+                    ['transaction', 'Transaction'],
+                    ['income', 'Income'],
+                    ['remove', 'Remove'],
+                  ].map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className={row.action === value ? 'active' : ''}
+                      onClick={() => updateDraftRow(row.key, { action: value })}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
-                {row.category_source === 'ai_match' && (
-                  <p className="muted small">AI-suggested category based on the transaction details - double check before approving.</p>
-                )}
                 {row.possible_duplicate && (
-                  <div className="stack" style={{ gap: 6 }}>
-                    <p className="over-budget small">
-                      Possible duplicate of a {row.possible_duplicate.source} entry: "{row.possible_duplicate.description}
-                      " for ${Number(row.possible_duplicate.amount).toFixed(2)} on {row.possible_duplicate.date} - same
-                      card, date, amount, and category. Already recorded there?
-                    </p>
-                    <div className="user-toggle">
-                      <button
-                        type="button"
-                        className={!row.includeDespiteDuplicate ? 'active' : ''}
-                        onClick={() => updateDraftRow(row.key, { includeDespiteDuplicate: false })}
-                      >
-                        Remove
-                      </button>
-                      <button
-                        type="button"
-                        className={row.includeDespiteDuplicate ? 'active' : ''}
-                        onClick={() => updateDraftRow(row.key, { includeDespiteDuplicate: true })}
-                      >
-                        Approve anyway
-                      </button>
+                  <p className="over-budget small">
+                    Possible duplicate of a {row.possible_duplicate.source} entry: "{row.possible_duplicate.description}"
+                    for ${Number(row.possible_duplicate.amount).toFixed(2)} on {row.possible_duplicate.date} - same card,
+                    date, amount, and category. Already recorded there? Leave it on Remove, or pick Transaction to
+                    import it anyway.
+                  </p>
+                )}
+                {row.action !== 'remove' && (
+                  <>
+                    <div className="filter-row">
+                      <input
+                        type="text"
+                        value={row.description}
+                        aria-label={row.action === 'income' ? 'Income source' : 'Description'}
+                        onChange={(e) => updateDraftRow(row.key, { description: e.target.value })}
+                      />
+                      <div className={`amount${row.action === 'income' ? ' net-positive' : ''}`} style={{ display: 'flex', alignItems: 'center', flex: '0 0 auto' }}>
+                        ${Math.abs(Number(row.amount)).toFixed(2)}
+                      </div>
                     </div>
-                  </div>
+                    {row.action === 'income' ? (
+                      <p className="muted small">Will be logged to Income (using the text above as its source), not the transaction ledger.</p>
+                    ) : (
+                      <>
+                        <select
+                          value={row.selectedCategoryId}
+                          onChange={(e) => updateDraftRow(row.key, { selectedCategoryId: e.target.value })}
+                        >
+                          <option value="">Uncategorized</option>
+                          {row.category_label && <option value="__new__">{row.category_label} (new)</option>}
+                          <CategoryOptions
+                            categories={categories}
+                            frequentIds={previewMeta?.frequent_categories?.[row.card_id]}
+                          />
+                        </select>
+                        {row.category_source === 'hint' && (
+                          <p className="muted small">Suggested from the bank's category or merchant name - double check before approving.</p>
+                        )}
+                        {row.category_source === 'ai_match' && (
+                          <p className="muted small">AI-suggested category based on the transaction details - double check before approving.</p>
+                        )}
+                        <TagEditor
+                          tags={row.tags}
+                          suggestions={tagSuggestions}
+                          onAdd={(name) =>
+                            !row.tags.some((t) => t.toLowerCase() === name.toLowerCase()) &&
+                            updateDraftRow(row.key, { tags: [...row.tags, name] })
+                          }
+                          onRemove={(name) => updateDraftRow(row.key, { tags: row.tags.filter((t) => t !== name) })}
+                        />
+                      </>
+                    )}
+                  </>
                 )}
               </li>
             ))}
@@ -736,6 +788,11 @@ function ImportStatement() {
             <li>
               <strong>{result.transfers_excluded?.length ?? 0}</strong> transfers between our accounts excluded
             </li>
+            {result.income_logged > 0 && (
+              <li>
+                <strong>{result.income_logged}</strong> switched to income during review
+              </li>
+            )}
             {result.income_added?.length > 0 && (
               <li>
                 <strong>{result.income_added.length}</strong> added to income
